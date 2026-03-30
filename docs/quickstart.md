@@ -4,12 +4,11 @@
 
 ### Prerequisites
 
-papa2 requires a compiled `libdada2.so` shared library. Build it from source:
+papa2 requires a compiled `libpapa2.so` shared library. Build it from source:
 
 ```bash
-git clone https://github.com/rec3141/dada2.git
-cd dada2
-git checkout gpu-python
+git clone https://github.com/rec3141/papa2.git
+cd papa2
 ```
 
 ### Build the C/C++ core
@@ -17,14 +16,14 @@ git checkout gpu-python
 ```bash
 # Using the conda environment (recommended)
 mamba env create -f environment.yml
-conda activate dada2-dev
-make libdada2.so
+conda activate papa2-dev
+make libpapa2.so
 ```
 
 Or build directly with:
 
 ```bash
-make libdada2.so
+make libpapa2.so
 ```
 
 ### Install the Python package

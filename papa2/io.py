@@ -5,8 +5,8 @@ import os
 import ctypes as ct
 import numpy as np
 
-# Try to load C dereplication from libdada2.so
-_lib_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "libdada2.so")
+# Try to load C dereplication from libpapa2.so
+_lib_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "libpapa2.so")
 try:
     _lib = ct.CDLL(_lib_path)
 

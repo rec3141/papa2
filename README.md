@@ -16,7 +16,7 @@ Full documentation: **https://rec3141.github.io/papa2**
 
 - **Byte-identical to R dada2** — same ASVs, same error models, validated on real datasets
 - **4–8x faster than R** on real datasets (tested up to 40M reads; see benchmarks below)
-- **No R dependency** — standalone Python package with a compiled C core (`libdada2.so`)
+- **No R dependency** — standalone Python package with a compiled C core (`libpapa2.so`)
 - **Full DADA2 pipeline** — filter & trim, dereplication, error learning, denoising, paired-end merging, chimera removal, and taxonomy assignment
 - **Parallel multi-sample processing** — scales across all available CPU cores
 
@@ -79,7 +79,7 @@ Benchmarks run on a single workstation (AMD EPYC, 32 cores). papa2 uses all avai
 
 ```
 papa2/        Python package
-src/          standalone C/C++ native core (compiled to libdada2.so)
+src/          standalone C/C++ native core (compiled to libpapa2.so)
 tests/        pytest suite with bundled FASTQ fixtures
 docs/         MkDocs documentation source
 ```
@@ -91,10 +91,10 @@ docs/         MkDocs documentation source
 ```bash
 # Create and activate the dev environment
 mamba env create -f environment.yml
-conda activate dada2-dev
+conda activate papa2-dev
 
 # Build the native shared library
-make clean libdada2.so
+make clean libpapa2.so
 
 # Run the test suite
 pytest

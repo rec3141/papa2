@@ -1,9 +1,12 @@
-name: dada2-dev
+name: papa2-dev
 channels:
   - conda-forge
 dependencies:
   - python=3.12
   - numpy
+  - pandas
+  - psutil
+  - matplotlib
   - pytest
   - pip
   - make

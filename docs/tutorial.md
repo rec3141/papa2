@@ -50,7 +50,7 @@ A typical choice for 2×250 bp V4 16S reads is `truncLen=(240, 200)`.
 
 `derep_fastq()` collapses identical reads into unique sequences and computes
 per-position average quality scores. This step is fast because the C backend
-is used when `libdada2.so` is present.
+is used when `libpapa2.so` is present.
 
 ```python
 derepFs = [papa2.derep_fastq(f, verbose=True) for f in fwd_files]

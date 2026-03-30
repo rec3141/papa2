@@ -2,7 +2,7 @@
 
 **Python-first amplicon denoising derived from DADA2.**
 
-papa2 is a Python package that implements the DADA2 (Divisive Amplicon Denoising Algorithm 2) workflow entirely in Python, backed by a standalone C/C++ core (`libdada2.so`). It produces byte-identical results to R's `dada2` package and is designed for researchers who prefer working in Python ecosystems.
+papa2 is a Python package that implements the DADA2 (Divisive Amplicon Denoising Algorithm 2) workflow entirely in Python, backed by a standalone C/C++ core (`libpapa2.so`). It produces byte-identical results to R's `dada2` package and is designed for researchers who prefer working in Python ecosystems.
 
 ## What is DADA2?
 
@@ -45,10 +45,10 @@ papa2/
 │   ├── paired.py    Paired-end merging: merge_pairs()
 │   ├── chimera.py   Chimera removal: remove_bimera_denovo()
 │   ├── utils.py     Utilities: taxonomy, sequence tables, QC
-│   └── _cdada.py    ctypes bindings to libdada2.so
+│   └── _cdada.py    ctypes bindings to libpapa2.so
 ├── src/             Standalone C/C++ core
 ├── tests/           pytest suite with FASTQ fixtures
-└── libdada2.so      Compiled shared library
+└── libpapa2.so      Compiled shared library
 ```
 
 ## Quick Smoke Test
@@ -62,8 +62,8 @@ print(papa2.__version__)
 
 ```bash
 mamba env create -f environment.yml
-conda activate dada2-dev
-make clean libdada2.so
+conda activate papa2-dev
+make clean libpapa2.so
 pytest
 ```
 

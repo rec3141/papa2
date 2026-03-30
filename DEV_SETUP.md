@@ -6,7 +6,7 @@ Create the development environment from the repo root:
 
 ```bash
 mamba env create -f environment.yml
-conda activate dada2-dev
+conda activate papa2-dev
 ```
 
 ## CPU-Only Build
@@ -14,7 +14,7 @@ conda activate dada2-dev
 Build the standalone shared library:
 
 ```bash
-make clean libdada2.so
+make clean libpapa2.so
 ```
 
 ## Quick Checks

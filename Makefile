@@ -1,4 +1,4 @@
-# Makefile for building standalone CPU-only libdada2.so (Python-compatible)
+# Makefile for building standalone CPU-only libpapa2.so (Python-compatible)
 
 CXX = g++
 CXXFLAGS = -O3 -fPIC -std=c++11 -DNO_RCPP -DNDEBUG -march=native -fopenmp -Wno-format -flto
@@ -25,11 +25,11 @@ LDFLAGS = -lm
 
 .PHONY: all clean docs
 
-all: libdada2.so
+all: libpapa2.so
 
 COBJS = $(CSRCS:.c=.o)
 
-libdada2.so: $(OBJS) $(COBJS)
+libpapa2.so: $(OBJS) $(COBJS)
 	$(CXX) -shared -o $@ $^ $(LDFLAGS) -fopenmp -lz
 
 src/%.o: src/%.c
@@ -39,7 +39,7 @@ src/%.o: src/%.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 clean:
-	rm -f src/*.o libdada2.so
+	rm -f src/*.o libpapa2.so
 
 # Build documentation with mkdocs-material
 docs:

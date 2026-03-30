@@ -41,8 +41,8 @@ jobs:
       # ------------------------------------------------------------------ #
       # Compile shared library
       # ------------------------------------------------------------------ #
-      - name: Build libdada2.so
-        run: make libdada2.so
+      - name: Build libpapa2.so
+        run: make libpapa2.so
 
       # ------------------------------------------------------------------ #
       # Python package installation

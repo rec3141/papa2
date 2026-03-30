@@ -1,13 +1,13 @@
-"""ctypes bindings to libdada2.so C API."""
+"""ctypes bindings to libpapa2.so C API."""
 
 import ctypes as ct
 import numpy as np
 import os
 
 # Load the shared library
-_lib_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "libdada2.so")
+_lib_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "libpapa2.so")
 if not os.path.exists(_lib_path):
-    _lib_path = "libdada2.so"
+    _lib_path = "libpapa2.so"
 _lib = ct.CDLL(_lib_path)
 
 

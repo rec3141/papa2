@@ -216,7 +216,7 @@ profiling, FASTA I/O, PhiX detection, and sequence complexity analysis.
 
 ## papa2._cdada — C Bindings
 
-Low-level ctypes bindings to the `libdada2.so` shared library. Most users should
+Low-level ctypes bindings to the `libpapa2.so` shared library. Most users should
 not call these directly — they are used internally by the higher-level functions
 above.
 
