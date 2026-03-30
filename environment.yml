@@ -1,0 +1,12 @@
+name: dada2-dev
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - numpy
+  - pytest
+  - pip
+  - make
+  - zlib
+  - gcc_linux-64
+  - gxx_linux-64

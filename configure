@@ -1,0 +1,12 @@
+#!/bin/sh
+# configure script for standalone CPU-only build
+
+echo "* generating src/Makevars..."
+
+cat > src/Makevars << 'MAKEVARS_EOF'
+PKG_LIBS += $(shell ${R_HOME}/bin/Rscript -e "RcppParallel::RcppParallelLibs()")
+CXX_STD = CXX11
+MAKEVARS_EOF
+
+echo "  GPU support disabled on this branch."
+echo "* done."

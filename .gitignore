@@ -1,0 +1,19 @@
+# Build artifacts
+src/*.o
+src/*.so
+src/Makevars
+libdada2.so
+
+# Python cache
+__pycache__/
+papa2/__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+build/
+dist/
+*.egg-info/
+
+# Editor
+*.swp
+*~
