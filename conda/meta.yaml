@@ -7,7 +7,7 @@ package:
 
 source:
   url: https://github.com/rec3141/{{ name }}/archive/refs/tags/v{{ version }}.tar.gz
-  sha256: b2100688cdf5c65f753ab578c356f7c56ef1c28a7751ff013d76af644c8885a8
+  sha256: 20c7ab4eb578c7a572a7e3a5a125efda8ee28943ac9823874dff7707d9ba6281
 
 build:
   number: 0
@@ -21,7 +21,7 @@ requirements:
     - {{ compiler('cxx') }}
     - make
   host:
-    - python >=3.10
+    - python
     - pip
     - setuptools >=68
     - wheel
