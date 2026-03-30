@@ -4,6 +4,9 @@ This directory contains a reproducible benchmark harness for comparing:
 - the Python package in this repo (`papa2`)
 - the R `dada2` package or a local R package source tree
 
+For the current benchmark writeup and real-data results, see
+[BENCHMARKS.md](./BENCHMARKS.md).
+
 ## Scope
 
 The harness is designed to sweep:
