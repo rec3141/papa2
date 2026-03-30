@@ -33,7 +33,7 @@ RUN apt-get update -qq && \
     rm -rf /var/lib/apt/lists/*
 
 # Install numpy (required by papa2 at import time)
-RUN pip install --no-cache-dir numpy pandas plotly
+RUN pip install --no-cache-dir numpy pandas plotly matplotlib
 
 # ── Locate site-packages and install the papa2 package ────────────────────
 # We copy files directly rather than running `pip install .` to avoid
