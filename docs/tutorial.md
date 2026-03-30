@@ -226,60 +226,7 @@ Available methods:
 
 ---
 
-## 8. Track Reads Through the Pipeline
-
-It is good practice to track how many reads pass each step. papa2 provides
-`track_reads()` and `plot_sankey()` to make this easy:
-
-```python
-# Build a summary dict from pipeline stage outputs
-track = papa2.track_reads(
-    dereps=derepFs,
-    dadas=dadaFs,
-    mergers=mergers,
-    seqtab=seqtab,
-    seqtab_nochim=seqtab_nochim["table"],
-)
-print(track)
-# e.g. {'input': 50000, 'denoised': 42000, 'merged': 40000, ...}
-
-# Generate an interactive Sankey diagram
-papa2.plot_sankey(track, output="read_tracking.html")
-```
-
-The Sankey diagram shows read flow between pipeline stages as an interactive
-Plotly figure. Pass `output="read_tracking.html"` to save it, or omit `output`
-to display inline in a Jupyter notebook.
-
-You can also build the tracking table manually for more control:
-
-```python
-import pandas as pd
-
-rows = []
-for i, name in enumerate(sample_names):
-    n_input    = int(derepFs[i]["abundances"].sum())
-    n_denoised = int(dadaFs[i]["cluster_abunds"].sum())
-    n_merged   = int(sum(r["abundance"] for r in mergers[i] if r["accept"]))
-    rows.append({
-        "sample":   name,
-        "input":    n_input,
-        "denoised": n_denoised,
-        "merged":   n_merged,
-    })
-
-# Add per-sample non-chimeric read counts
-nochim_table = seqtab_nochim["table"]
-for i, row in enumerate(rows):
-    row["nonchim"] = int(nochim_table[i].sum())
-
-df = pd.DataFrame(rows)
-print(df.to_string(index=False))
-```
-
----
-
-## 9. Assign Taxonomy
+## 8. Assign Taxonomy
 
 papa2 includes a k-mer-based Bayesian classifier (`assign_species`) that matches
 R's `assignTaxonomy`. Download a formatted reference database and point papa2 to it.
@@ -319,6 +266,57 @@ taxa_with_species = papa2.add_species(
     seqtab_nochim["seqs"],
     "silva_species_assignment_v138.1.fa.gz"
 )
+```
+
+---
+
+## 9. Track Reads Through the Pipeline
+
+It is good practice to track how many reads pass each step. papa2 provides
+`track_reads()` and `plot_sankey()` to summarise the entire pipeline —
+from raw input through chimera removal and taxonomy — as an interactive
+Sankey diagram:
+
+```python
+track = papa2.track_reads(
+    dereps=derepFs,
+    dadas=dadaFs,
+    mergers=mergers,
+    seqtab=seqtab,
+    seqtab_nochim=seqtab_nochim,
+    taxa=taxa_with_species,
+)
+print(track)
+# e.g. {'input': 50000, 'denoised': 42000, 'merged': 40000,
+#        'tabled': 40000, 'non-chimeric': 38000, 'classified': 36500}
+
+# Save as interactive HTML (or omit output= to display in Jupyter)
+papa2.plot_sankey(track, output="read_tracking.html")
+```
+
+You can also build a per-sample tracking table for more detail:
+
+```python
+import pandas as pd
+
+rows = []
+for i, name in enumerate(sample_names):
+    n_input    = int(derepFs[i]["abundances"].sum())
+    n_denoised = int(dadaFs[i]["cluster_abunds"].sum())
+    n_merged   = int(sum(r["abundance"] for r in mergers[i] if r["accept"]))
+    rows.append({
+        "sample":   name,
+        "input":    n_input,
+        "denoised": n_denoised,
+        "merged":   n_merged,
+    })
+
+nochim_table = seqtab_nochim["table"]
+for i, row in enumerate(rows):
+    row["nonchim"] = int(nochim_table[i].sum())
+
+df = pd.DataFrame(rows)
+print(df.to_string(index=False))
 ```
 
 ---

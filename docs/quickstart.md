@@ -143,7 +143,7 @@ print(f"Final: {seqtab_nochim['table'].shape[1]} ASVs across "
 # Visualise read tracking
 track = papa2.track_reads(
     dereps=derepFs, dadas=dadaFs, mergers=mergers,
-    seqtab=seqtab, seqtab_nochim=seqtab_nochim["table"],
+    seqtab=seqtab, seqtab_nochim=seqtab_nochim,
 )
 papa2.plot_sankey(track, output="read_tracking.html")
 ```

@@ -196,11 +196,11 @@ download links.
 ## Stage 7: Track Reads and Export
 
 ```python
-# Sankey diagram (optional — requires plotly)
+# Sankey diagram — tracks reads through every stage including taxonomy
 track = papa2.track_reads(
-    dadas=list(dds.values()) if 'dds' in dir() else None,
     seqtab=seqtab,
-    seqtab_nochim=seqtab_nochim["table"],
+    seqtab_nochim=seqtab_nochim,
+    taxa=taxa_with_species,
 )
 papa2.plot_sankey(track, output="read_tracking.html")
 

@@ -1053,12 +1053,33 @@ def plot_sankey(
     return fig
 
 
+def _seqtab_sum(st):
+    """Return total read count from a sequence table (array, dict, or DataFrame)."""
+    if hasattr(st, "values"):  # DataFrame
+        return int(st.values.sum())
+    if isinstance(st, dict) and "table" in st:
+        return int(st["table"].sum())
+    if hasattr(st, "sum"):  # numpy array
+        return int(st.sum())
+    return 0
+
+
+def _seqtab_seqs(st):
+    """Return the list of ASV sequences from a sequence table."""
+    if isinstance(st, dict) and "seqs" in st:
+        return st["seqs"]
+    if hasattr(st, "columns"):  # DataFrame with seq columns
+        return list(st.columns)
+    return None
+
+
 def track_reads(
     dereps=None,
     dadas=None,
     mergers=None,
     seqtab=None,
     seqtab_nochim=None,
+    taxa=None,
 ):
     """Build a read-tracking dict from pipeline stage outputs.
 
@@ -1069,8 +1090,11 @@ def track_reads(
         dereps: List of derep dicts (from derep_fastq)
         dadas: List of dada result dicts
         mergers: List of merger lists (from merge_pairs)
-        seqtab: Sequence table (DataFrame from make_sequence_table)
-        seqtab_nochim: Chimera-filtered sequence table
+        seqtab: Sequence table (dict with 'table'/'seqs', DataFrame, or array)
+        seqtab_nochim: Chimera-filtered sequence table (same formats as seqtab)
+        taxa: Taxonomy array from assign_species / add_species, shape (N, K).
+            Used together with seqtab_nochim (or seqtab) to count reads
+            assigned to classified ASVs.
 
     Returns:
         Dict mapping stage names to total read counts.
@@ -1093,13 +1117,35 @@ def track_reads(
                     total += m["abundance"]
         track["merged"] = int(total)
     if seqtab is not None:
-        if hasattr(seqtab, "values"):
-            track["tabled"] = int(seqtab.values.sum())
-        elif isinstance(seqtab, dict) and "table" in seqtab:
-            track["tabled"] = int(seqtab["table"].sum())
+        track["tabled"] = _seqtab_sum(seqtab)
     if seqtab_nochim is not None:
-        if hasattr(seqtab_nochim, "values"):
-            track["non-chimeric"] = int(seqtab_nochim.values.sum())
-        elif isinstance(seqtab_nochim, dict) and "table" in seqtab_nochim:
-            track["non-chimeric"] = int(seqtab_nochim["table"].sum())
+        track["non-chimeric"] = _seqtab_sum(seqtab_nochim)
+    if taxa is not None:
+        # Count reads belonging to ASVs that were classified at any rank.
+        # taxa is (N_asvs, K_ranks) — an ASV is "classified" if any rank
+        # is not None.
+        import numpy as np
+        taxa_arr = np.asarray(taxa)
+        # Which ASVs have at least one non-None taxonomic assignment?
+        if taxa_arr.ndim == 2:
+            classified_mask = np.array(
+                [any(cell is not None for cell in row) for row in taxa_arr]
+            )
+        else:
+            classified_mask = np.array(
+                [cell is not None for cell in taxa_arr]
+            )
+        # Sum reads for classified ASVs from the best available table
+        ref_st = seqtab_nochim if seqtab_nochim is not None else seqtab
+        if ref_st is not None:
+            if isinstance(ref_st, dict) and "table" in ref_st:
+                tbl = ref_st["table"]
+            elif hasattr(ref_st, "values"):
+                tbl = ref_st.values
+            else:
+                tbl = np.asarray(ref_st)
+            # tbl is (n_samples, n_asvs) — sum per-ASV across samples
+            per_asv = tbl.sum(axis=0) if tbl.ndim == 2 else tbl
+            if len(classified_mask) == len(per_asv):
+                track["classified"] = int(per_asv[classified_mask].sum())
     return track
