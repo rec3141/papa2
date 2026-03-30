@@ -81,6 +81,30 @@ FASTQ reading and dereplication.
 
 ---
 
+## papa2.filter — Filtering and Trimming
+
+Quality filtering, trimming, and PhiX removal for FASTQ files.
+
+### filter_and_trim
+
+::: papa2.filter.filter_and_trim
+    options:
+      heading_level: 3
+
+### fastq_filter
+
+::: papa2.filter.fastq_filter
+    options:
+      heading_level: 3
+
+### fastq_paired_filter
+
+::: papa2.filter.fastq_paired_filter
+    options:
+      heading_level: 3
+
+---
+
 ## papa2.error — Error Models
 
 Functions for estimating and manipulating the DADA2 error rate matrix.
@@ -100,6 +124,18 @@ Functions for estimating and manipulating the DADA2 error rate matrix.
 ### inflate_err
 
 ::: papa2.error.inflate_err
+    options:
+      heading_level: 3
+
+### pacbio_errfun
+
+::: papa2.error.pacbio_errfun
+    options:
+      heading_level: 3
+
+### make_binned_qual_errfun
+
+::: papa2.error.make_binned_qual_errfun
     options:
       heading_level: 3
 
@@ -136,6 +172,18 @@ Chimera detection and removal functions matching R's dada2 interface.
 ### is_bimera_denovo
 
 ::: papa2.chimera.is_bimera_denovo
+    options:
+      heading_level: 3
+
+---
+
+## papa2.taxonomy — Taxonomic Classification
+
+Bayesian k-mer classifier for taxonomic assignment.
+
+### assign_taxonomy
+
+::: papa2.taxonomy.assign_taxonomy
     options:
       heading_level: 3
 
@@ -209,6 +257,60 @@ profiling, FASTA I/O, PhiX detection, and sequence complexity analysis.
 ### get_uniques
 
 ::: papa2.utils.get_uniques
+    options:
+      heading_level: 3
+
+### get_errors
+
+::: papa2.utils.get_errors
+    options:
+      heading_level: 3
+
+### merge_sequence_tables
+
+::: papa2.utils.merge_sequence_tables
+    options:
+      heading_level: 3
+
+### nwhamming
+
+::: papa2.utils.nwhamming
+    options:
+      heading_level: 3
+
+### is_shift_denovo
+
+::: papa2.utils.is_shift_denovo
+    options:
+      heading_level: 3
+
+### plot_errors
+
+::: papa2.utils.plot_errors
+    options:
+      heading_level: 3
+
+### plot_complexity
+
+::: papa2.utils.plot_complexity
+    options:
+      heading_level: 3
+
+### plot_sankey
+
+::: papa2.utils.plot_sankey
+    options:
+      heading_level: 3
+
+### track_reads
+
+::: papa2.utils.track_reads
+    options:
+      heading_level: 3
+
+### remove_primers
+
+::: papa2.utils.remove_primers
     options:
       heading_level: 3
 

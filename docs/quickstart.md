@@ -107,23 +107,35 @@ print("Sankey diagram saved to read_tracking.html")
 
 ## Paired-End Example
 
-For paired-end data, dereplication and denoising are done separately on
-forward and reverse reads, then merged:
+For paired-end data, filter, dereplicate, and denoise forward and reverse
+reads separately, then merge:
 
 ```python
+import os
 import papa2
 
 # Forward and reverse FASTQ files (replace with your own paths)
 fwd_files = ["sample1_R1.fastq.gz", "sample2_R1.fastq.gz"]
 rev_files = ["sample1_R2.fastq.gz", "sample2_R2.fastq.gz"]
 
-# Learn errors from forward and reverse reads separately
-errF = papa2.learn_errors(fwd_files, verbose=True)
-errR = papa2.learn_errors(rev_files, verbose=True)
+# Filter and trim
+filt_fwd = [os.path.join("filtered", os.path.basename(f)) for f in fwd_files]
+filt_rev = [os.path.join("filtered", os.path.basename(f)) for f in rev_files]
+
+papa2.filter_and_trim(
+    fwd_files, filt_fwd,
+    rev=rev_files, filt_rev=filt_rev,
+    trunc_len=(240, 200), max_ee=(2, 2), trunc_q=2,
+    rm_phix=True, verbose=True,
+)
+
+# Learn errors from filtered reads
+errF = papa2.learn_errors(filt_fwd, verbose=True)
+errR = papa2.learn_errors(filt_rev, verbose=True)
 
 # Dereplicate
-derepFs = [papa2.derep_fastq(f) for f in fwd_files]
-derepRs = [papa2.derep_fastq(f) for f in rev_files]
+derepFs = [papa2.derep_fastq(f) for f in filt_fwd]
+derepRs = [papa2.derep_fastq(f) for f in filt_rev]
 
 # Denoise
 dadaFs = papa2.dada(derepFs, err=errF)

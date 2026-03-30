@@ -12,10 +12,12 @@ papa2 brings this proven algorithm to Python with no R dependency.
 
 ## Features
 
-- **Byte-identical results** to R's `dada2` package
-- **CPU-only** pure-Python interface with a fast C/C++ core
-- **Full DADA2 workflow** in Python: dereplication, error learning, denoising, paired-end merging, chimera removal, sequence tables, and taxonomy assignment
+- **Byte-identical results** to R's `dada2` package — [20/20 parity tests pass](https://github.com/rec3141/papa2/blob/main/tests/compare_with_r.py)
+- **Complete DADA2 port** — all 37 R functions have Python equivalents
+- **Full workflow** in Python: filtering, dereplication, error learning, denoising, paired-end merging, chimera removal, sequence tables, taxonomy, and visualization
 - **LOESS error modeling** that faithfully mirrors R's `loessErrfun`
+- **Bayesian taxonomy classifier** (`assign_taxonomy`) matching R's `assignTaxonomy`
+- **Interactive Sankey diagrams** for read tracking through the pipeline
 - **Parallel processing** across samples via `ProcessPoolExecutor`
 - Drop-in replacement for `dada2` R scripts translated to Python
 
@@ -40,14 +42,16 @@ Upstream: [benjjneb/dada2](https://github.com/benjjneb/dada2)
 papa2/
 ├── papa2/           Python package
 │   ├── dada.py      Core denoising: dada(), learn_errors()
+│   ├── filter.py    Quality filtering: filter_and_trim()
 │   ├── io.py        FASTQ I/O: derep_fastq()
-│   ├── error.py     Error models: loess_errfun(), noqual_errfun()
+│   ├── error.py     Error models: loess_errfun(), pacbio_errfun()
+│   ├── taxonomy.py  Taxonomic classification: assign_taxonomy()
 │   ├── paired.py    Paired-end merging: merge_pairs()
 │   ├── chimera.py   Chimera removal: remove_bimera_denovo()
-│   ├── utils.py     Utilities: taxonomy, sequence tables, QC
+│   ├── utils.py     Utilities: sequence tables, plotting, QC
 │   └── _cdada.py    ctypes bindings to libpapa2.so
 ├── src/             Standalone C/C++ core
-├── tests/           pytest suite with FASTQ fixtures
+├── tests/           Parity tests against R dada2
 └── libpapa2.so      Compiled shared library
 ```
 
