@@ -4,11 +4,31 @@ import ctypes as ct
 import numpy as np
 import os
 
-# Load the shared library
-_lib_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "libpapa2.so")
-if not os.path.exists(_lib_path):
-    _lib_path = "libpapa2.so"
-_lib = ct.CDLL(_lib_path)
+# Load the shared library — search order:
+#   1. Same directory as this file (papa2/ package dir, from setup.py package_data)
+#   2. One level up (project root, for dev installs)
+#   3. System library path (LD_LIBRARY_PATH / ldconfig)
+_pkg_dir = os.path.dirname(os.path.abspath(__file__))
+_search_paths = [
+    os.path.join(_pkg_dir, "libpapa2.so"),
+    os.path.join(os.path.dirname(_pkg_dir), "libpapa2.so"),
+    "libpapa2.so",
+]
+_lib = None
+for _lib_path in _search_paths:
+    if _lib_path != "libpapa2.so" and not os.path.exists(_lib_path):
+        continue
+    try:
+        _lib = ct.CDLL(_lib_path)
+        break
+    except OSError:
+        continue
+if _lib is None:
+    raise OSError(
+        "Cannot find libpapa2.so. Searched:\n  " +
+        "\n  ".join(_search_paths) +
+        "\nBuild it with: make libpapa2.so"
+    )
 
 
 class DadaResult(ct.Structure):
