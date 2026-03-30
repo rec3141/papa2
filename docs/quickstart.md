@@ -2,6 +2,22 @@
 
 ## Installation
 
+### Container (Docker / Apptainer)
+
+The fastest way to get started — no compiler or conda environment required.
+
+```bash
+# Docker
+docker pull ghcr.io/rec3141/papa2:latest
+docker run -v $(pwd):/data ghcr.io/rec3141/papa2 python3 my_script.py
+
+# Apptainer (HPC)
+apptainer pull papa2.sif docker://ghcr.io/rec3141/papa2:latest
+apptainer exec papa2.sif python3 my_script.py
+```
+
+---
+
 ### Prerequisites
 
 papa2 requires a compiled `libpapa2.so` shared library. Build it from source:
