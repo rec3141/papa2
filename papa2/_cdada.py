@@ -220,7 +220,7 @@ _lib.dada2_free_string.restype = None
 _lib.dada2_free_string.argtypes = [ct.c_void_p]
 
 
-def nwalign(s1, s2, match=1, mismatch=-64, gap_p=-64, band=-1):
+def nwalign(s1, s2, match=5, mismatch=-4, gap_p=-8, band=-1):
     """NW ends-free alignment of two ACGT strings.
 
     Returns:
