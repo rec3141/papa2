@@ -31,7 +31,7 @@ cd papa2
 
 ```bash
 # Using the conda environment (recommended)
-mamba env create -f environment.yml
+conda env create -f environment.yml
 conda activate papa2-dev
 make libpapa2.so
 ```

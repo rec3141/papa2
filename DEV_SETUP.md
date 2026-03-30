@@ -5,7 +5,7 @@
 Create the development environment from the repo root:
 
 ```bash
-mamba env create -f environment.yml
+conda env create -f environment.yml
 conda activate papa2-dev
 ```
 

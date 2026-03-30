@@ -61,7 +61,7 @@ print(papa2.__version__)
 ## Development Setup
 
 ```bash
-mamba env create -f environment.yml
+conda env create -f environment.yml
 conda activate papa2-dev
 make clean libpapa2.so
 pytest

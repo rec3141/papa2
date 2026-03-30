@@ -90,7 +90,7 @@ docs/         MkDocs documentation source
 
 ```bash
 # Create and activate the dev environment
-mamba env create -f environment.yml
+conda env create -f environment.yml
 conda activate papa2-dev
 
 # Build the native shared library
