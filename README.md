@@ -16,12 +16,12 @@ The current project is CPU-only.
 ## Provenance
 
 `papa2` was split out of the development work that happened in:
-- fork: `https://github.com/rec3141/dada2`
-- branch: `gpu-python`
+- fork: [rec3141/dada2](https://github.com/rec3141/dada2)
+- branch: [gpu-python](https://github.com/rec3141/dada2/tree/gpu-python)
 
 That line of work branched from upstream DADA2 at:
-- upstream repo: `https://github.com/benjjneb/dada2`
-- branch-point commit: `72da7700b58290e40cdce4b0856314aecf2b9dc4`
+- upstream repo: [benjjneb/dada2](https://github.com/benjjneb/dada2)
+- branch-point commit: [72da7700b58290e40cdce4b0856314aecf2b9dc4](https://github.com/benjjneb/dada2/commit/72da7700b58290e40cdce4b0856314aecf2b9dc4)
 - commit date: `2026-02-13`
 
 The initial `papa2` import is a Python-only extraction of that line of work.
@@ -53,4 +53,4 @@ PY
 ## Upstream
 
 The denoising algorithm and much of the native core logic originate from DADA2:
-- https://github.com/benjjneb/dada2
+- [benjjneb/dada2](https://github.com/benjjneb/dada2)
