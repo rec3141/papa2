@@ -522,6 +522,27 @@ def make_sequence_table(
     """
     import pandas as pd
 
+    # Accept a list of dada results or merger lists (extract denoised dicts)
+    if isinstance(samples_dict, list):
+        converted = {}
+        for i, item in enumerate(samples_dict):
+            name = f"sample_{i+1}"
+            if isinstance(item, dict) and "denoised" in item:
+                converted[name] = item["denoised"]
+            elif isinstance(item, dict):
+                converted[name] = item
+            elif isinstance(item, list):
+                # List of merger dicts (from merge_pairs)
+                merged = {}
+                for m in item:
+                    if m.get("accept", True):
+                        seq = m["sequence"]
+                        merged[seq] = merged.get(seq, 0) + m["abundance"]
+                converted[name] = merged
+            else:
+                raise TypeError(f"Unexpected item type in samples list: {type(item)}")
+        samples_dict = converted
+
     logger.info("[INFO] make_sequence_table: %d samples.", len(samples_dict))
 
     # Gather all unique sequences

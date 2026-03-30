@@ -37,15 +37,12 @@ def parse_hms(text: str) -> float:
 def parse_time_file(path: Path) -> dict:
     metrics: dict[str, object] = {}
     for line in path.read_text().splitlines():
-        if ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        key = key.strip()
-        value = value.strip()
-        out_key = TIME_FIELDS.get(key)
-        if out_key is None:
-            continue
-        metrics[out_key] = value
+        stripped = line.strip()
+        for key, out_key in TIME_FIELDS.items():
+            prefix = f"{key}:"
+            if stripped.startswith(prefix):
+                metrics[out_key] = stripped[len(prefix):].strip()
+                break
     if "elapsed_hms" in metrics:
         metrics["wall_s"] = parse_hms(str(metrics["elapsed_hms"]))
     for key in ("user_s", "sys_s"):
