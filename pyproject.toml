@@ -38,6 +38,9 @@ Repository = "https://github.com/rec3141/papa2"
 "Bug Tracker" = "https://github.com/rec3141/papa2/issues"
 
 [project.optional-dependencies]
+plot = [
+  "plotly",
+]
 docs = [
   "mkdocs-material",
   "mkdocstrings[python]",
