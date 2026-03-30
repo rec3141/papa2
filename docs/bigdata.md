@@ -33,23 +33,40 @@ Scaling behaviour:
 
 ## Stage 1: Filter and Trim
 
-papa2 expects pre-trimmed reads (adapter and primer removal with e.g.
-[cutadapt](https://cutadapt.readthedocs.io/)). If your reads still need
-quality truncation, do that before starting.
+Quality-filter and truncate reads with `filter_and_trim()`.  For paired-end
+data, both reads in a pair must pass for either to be kept.
 
 ```python
 import os, glob
+import papa2
 
-# Point to your directory of demultiplexed, trimmed FASTQs
+# Point to your directory of demultiplexed FASTQs
 fastq_dir = "data/run1"
 fwd_files = sorted(glob.glob(os.path.join(fastq_dir, "*_R1_001.fastq.gz")))
+rev_files = sorted(glob.glob(os.path.join(fastq_dir, "*_R2_001.fastq.gz")))
 
-# Derive sample names
 sample_names = [
     os.path.basename(f).replace("_R1_001.fastq.gz", "")
     for f in fwd_files
 ]
 print(f"{len(sample_names)} samples found")
+
+# Filter and trim
+filt_dir = "data/run1/filtered"
+filt_fwd = [os.path.join(filt_dir, os.path.basename(f)) for f in fwd_files]
+filt_rev = [os.path.join(filt_dir, os.path.basename(f)) for f in rev_files]
+
+out = papa2.filter_and_trim(
+    fwd_files, filt_fwd,
+    rev=rev_files, filt_rev=filt_rev,
+    trunc_len=(240, 200),
+    max_ee=(2, 2),
+    trunc_q=2,
+    rm_phix=True,
+    multithread=True,
+    verbose=True,
+)
+print(out)
 ```
 
 ---
@@ -60,16 +77,8 @@ Learn the error model from a subset of the data. 100 million bases is usually
 sufficient — papa2 will draw from the first N files until the target is reached.
 
 ```python
-import papa2
-
-errF = papa2.learn_errors(fwd_files, nbases=1e8, randomize=True, verbose=True)
-```
-
-For paired-end data, learn forward and reverse errors separately:
-
-```python
-rev_files = sorted(glob.glob(os.path.join(fastq_dir, "*_R2_001.fastq.gz")))
-errR = papa2.learn_errors(rev_files, nbases=1e8, randomize=True, verbose=True)
+errF = papa2.learn_errors(filt_fwd, nbases=1e8, randomize=True, verbose=True)
+errR = papa2.learn_errors(filt_rev, nbases=1e8, randomize=True, verbose=True)
 ```
 
 ---
@@ -177,9 +186,10 @@ print(f"Reads retained: {total_after}/{total_before} "
 ## Stage 6: Assign Taxonomy
 
 ```python
-taxa = papa2.assign_species(
+taxa = papa2.assign_taxonomy(
     seqtab_nochim["seqs"],
     "silva_nr99_v138.1_train_set.fa.gz",
+    min_boot=50,
     verbose=True,
 )
 

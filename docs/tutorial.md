@@ -8,7 +8,7 @@ papa2's Python API. The workflow mirrors the canonical
 syntax and papa2's interface throughout.
 
 **Expected input:** paired-end Illumina reads from a 16S (or ITS) amplicon
-experiment, already adapter-trimmed and primer-stripped (e.g. with cutadapt).
+experiment, demultiplexed into per-sample FASTQ files.
 
 ---
 
@@ -23,10 +23,13 @@ import papa2
 fastq_dir = "data/fastq"
 
 fwd_files = sorted(glob.glob(os.path.join(fastq_dir, "*_R1_001.fastq.gz")))
-rev_files  = sorted(glob.glob(os.path.join(fastq_dir, "*_R2_001.fastq.gz")))
+rev_files = sorted(glob.glob(os.path.join(fastq_dir, "*_R2_001.fastq.gz")))
 
 # Derive sample names from file names
-sample_names = [os.path.basename(f).replace("_R1_001.fastq.gz", "") for f in fwd_files]
+sample_names = [
+    os.path.basename(f).replace("_R1_001.fastq.gz", "")
+    for f in fwd_files
+]
 print(sample_names[:5])
 ```
 
@@ -34,29 +37,65 @@ print(sample_names[:5])
 
 ## 1. Inspect Read Quality
 
-Before denoising, visualise per-cycle quality to choose appropriate truncation
+Before filtering, visualise per-cycle quality to choose appropriate truncation
 lengths. `plot_quality_profile()` produces a heat-map of quality scores across
 read positions — the same summary as R's `plotQualityProfile`.
 
 ```python
 # Plot quality for the first three samples (forward reads)
 papa2.plot_quality_profile(fwd_files[:3])
+papa2.plot_quality_profile(rev_files[:3])
 ```
 
-Choose `truncLen` values where median quality stays above Q30 across all samples.
-A typical choice for 2×250 bp V4 16S reads is `truncLen=(240, 200)`.
+Choose `trunc_len` values where median quality stays above Q30 across all samples.
+A typical choice for 2×250 bp V4 16S reads is `trunc_len=(240, 200)`.
 
 ---
 
-## 2. Dereplicate FASTQ Files
+## 2. Filter and Trim
+
+`filter_and_trim()` applies quality truncation, expected-error filtering,
+PhiX removal, and length enforcement — then writes the passing reads to new
+FASTQ files.  Both reads in a pair must pass for either to be kept.
+
+```python
+filt_dir = "data/filtered"
+filt_fwd = [os.path.join(filt_dir, os.path.basename(f)) for f in fwd_files]
+filt_rev = [os.path.join(filt_dir, os.path.basename(f)) for f in rev_files]
+
+out = papa2.filter_and_trim(
+    fwd_files, filt_fwd,
+    rev=rev_files, filt_rev=filt_rev,
+    trunc_len=(240, 200),
+    max_ee=(2, 2),
+    trunc_q=2,
+    min_len=50,
+    rm_phix=True,
+    compress=True,
+    multithread=True,
+    verbose=True,
+)
+# out is an (n_files, 2) array: [reads_in, reads_out] per file
+print(out)
+```
+
+!!! tip "Tuning filter parameters"
+    - If too few reads pass, increase `max_ee` or reduce `trunc_len`.
+    - If quality drops sharply at read ends, decrease `trunc_len`.
+    - Forward and reverse reads can have different truncation lengths.
+
+---
+
+## 3. Dereplicate
 
 `derep_fastq()` collapses identical reads into unique sequences and computes
 per-position average quality scores. This step is fast because the C backend
 is used when `libpapa2.so` is present.
 
 ```python
-derepFs = [papa2.derep_fastq(f, verbose=True) for f in fwd_files]
-derepRs = [papa2.derep_fastq(f, verbose=True) for f in rev_files]
+# Use the filtered files
+derepFs = [papa2.derep_fastq(f, verbose=True) for f in filt_fwd]
+derepRs = [papa2.derep_fastq(f, verbose=True) for f in filt_rev]
 
 # Each element is a dict:
 #   seqs        list[str]   unique sequences, sorted descending by abundance
@@ -67,7 +106,7 @@ derepRs = [papa2.derep_fastq(f, verbose=True) for f in rev_files]
 
 ---
 
-## 3. Learn Error Rates
+## 4. Learn Error Rates
 
 DADA2 builds a parametric error model that describes the probability of observing
 each base transition (`A→C`, `A→G`, …) at every quality score. papa2 implements
@@ -91,7 +130,7 @@ print("Error matrix shape:", errF.shape)
 
 ---
 
-## 4. Denoise with DADA
+## 5. Denoise with DADA
 
 `dada()` applies the core DADA2 algorithm: it partitions the dereplicated reads
 into ASVs, evaluating each unique sequence against all more-abundant ones using
@@ -133,7 +172,7 @@ See `DADA_OPTS` for the full list of tunable parameters.
 
 ---
 
-## 5. Merge Paired-End Reads
+## 6. Merge Paired-End Reads
 
 `merge_pairs()` aligns the denoised forward and reverse ASVs to construct the
 full amplicon sequence. Pairs are accepted only when the overlap satisfies both
@@ -172,7 +211,7 @@ Each element of `mergers` is a list of dicts:
 
 ---
 
-## 6. Build the Sequence Table
+## 7. Build the Sequence Table
 
 `make_sequence_table()` assembles a (samples × ASVs) abundance matrix from the
 per-sample merger lists.
@@ -195,7 +234,7 @@ print(sorted(lengths.items()))
 
 ---
 
-## 7. Remove Chimeras
+## 8. Remove Chimeras
 
 Chimeric sequences are artefacts formed by the spurious joining of two parental
 molecules. `remove_bimera_denovo()` identifies and removes bimeras — chimeras with
@@ -228,10 +267,11 @@ Available methods:
 
 ---
 
-## 8. Assign Taxonomy
+## 9. Assign Taxonomy
 
-papa2 includes a k-mer-based Bayesian classifier (`assign_species`) that matches
-R's `assignTaxonomy`. Download a formatted reference database and point papa2 to it.
+papa2 includes both a k-mer-based Bayesian classifier (`assign_taxonomy`, matching
+R's `assignTaxonomy`) and an exact-match species assigner (`assign_species`).
+Download a formatted reference database and point papa2 to it.
 
 ### Download reference databases
 
@@ -256,23 +296,33 @@ wget https://zenodo.org/records/4587955/files/silva_species_assignment_v138.1.fa
 
 ```python
 # Naive Bayesian classifier (genus-level)
-taxa = papa2.assign_species(
+taxa = papa2.assign_taxonomy(
     seqtab_nochim["seqs"],
     "silva_nr99_v138.1_train_set.fa.gz",
-    verbose=True
+    min_boot=50,
+    verbose=True,
 )
+# taxa is a DataFrame: rows = ASV sequences, columns = Kingdom..Species
 
 # Exact-match species assignment using the SILVA species database
 taxa_with_species = papa2.add_species(
     taxa,
     seqtab_nochim["seqs"],
-    "silva_species_assignment_v138.1.fa.gz"
+    "silva_species_assignment_v138.1.fa.gz",
 )
+```
+
+### Inspect error rates
+
+After learning errors, visualise the fit to check for anomalies:
+
+```python
+papa2.plot_errors(errF, output="error_rates_fwd.html")
 ```
 
 ---
 
-## 9. Track Reads Through the Pipeline
+## 10. Track Reads Through the Pipeline
 
 It is good practice to track how many reads pass each step. papa2 provides
 `track_reads()` and `plot_sankey()` to summarise the entire pipeline —
@@ -325,7 +375,7 @@ print(df.to_string(index=False))
 
 ---
 
-## 10. Export Results
+## 11. Export Results
 
 ```python
 # Write ASVs to a FASTA file
@@ -345,7 +395,10 @@ np.save("seqtab_nochim.npy", seqtab_nochim["table"])
 ## Summary of the Workflow
 
 ```
-FASTQ files (trimmed, primer-free)
+Raw FASTQ files (demultiplexed)
+        │
+        ▼
+filter_and_trim()      # Quality filter, truncate, remove PhiX
         │
         ▼
 derep_fastq()          # Collapse identical reads
@@ -366,5 +419,8 @@ make_sequence_table()  # Assemble sample × ASV matrix
 remove_bimera_denovo() # Remove chimeric ASVs
         │
         ▼
-assign_species()       # Taxonomic classification (optional)
+assign_taxonomy()      # Bayesian taxonomic classification
+        │
+        ▼
+add_species()          # Exact-match species assignment
 ```
