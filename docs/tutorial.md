@@ -288,7 +288,9 @@ track = papa2.track_reads(
 )
 print(track)
 # e.g. {'input': 50000, 'denoised': 42000, 'merged': 40000,
-#        'tabled': 40000, 'non-chimeric': 38000, 'classified': 36500}
+#        'tabled': 40000, 'non-chimeric': 38000,
+#        'kingdom': 37800, 'phylum': 37200, 'class': 36500,
+#        'order': 35800, 'family': 34900, 'genus': 33500, 'species': 28000}
 
 # Save as interactive HTML (or omit output= to display in Jupyter)
 papa2.plot_sankey(track, output="read_tracking.html")

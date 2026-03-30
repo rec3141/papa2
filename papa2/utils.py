@@ -957,10 +957,13 @@ def plot_sankey(
     node_labels = list(stages)
     node_colors = []
 
-    # Color palette: blues for retained, reds for lost
+    # Color palette: blues for pipeline stages, greens for taxonomy ranks, red for lost
     stage_colors = [
         "#2196F3", "#1E88E5", "#1976D2", "#1565C0",
-        "#0D47A1", "#0A3D91", "#083080", "#062570",
+        "#0D47A1", "#0A3D91",
+        # taxonomy ranks (greens)
+        "#4CAF50", "#43A047", "#388E3C", "#2E7D32",
+        "#1B5E20", "#145214", "#0E3E0E",
     ]
     lost_color = "#EF5350"
 
@@ -1121,21 +1124,14 @@ def track_reads(
     if seqtab_nochim is not None:
         track["non-chimeric"] = _seqtab_sum(seqtab_nochim)
     if taxa is not None:
-        # Count reads belonging to ASVs that were classified at any rank.
-        # taxa is (N_asvs, K_ranks) — an ASV is "classified" if any rank
-        # is not None.
+        # Break down reads by taxonomic rank.
+        # taxa can be:
+        #   - pandas DataFrame with rank columns (Kingdom, Phylum, ..., Species)
+        #   - numpy array of shape (N_asvs, K_ranks)
+        #   - numpy array of shape (N_asvs,) for single-rank
         import numpy as np
-        taxa_arr = np.asarray(taxa)
-        # Which ASVs have at least one non-None taxonomic assignment?
-        if taxa_arr.ndim == 2:
-            classified_mask = np.array(
-                [any(cell is not None for cell in row) for row in taxa_arr]
-            )
-        else:
-            classified_mask = np.array(
-                [cell is not None for cell in taxa_arr]
-            )
-        # Sum reads for classified ASVs from the best available table
+
+        # Get per-ASV read totals from the best available table
         ref_st = seqtab_nochim if seqtab_nochim is not None else seqtab
         if ref_st is not None:
             if isinstance(ref_st, dict) and "table" in ref_st:
@@ -1144,8 +1140,28 @@ def track_reads(
                 tbl = ref_st.values
             else:
                 tbl = np.asarray(ref_st)
-            # tbl is (n_samples, n_asvs) — sum per-ASV across samples
             per_asv = tbl.sum(axis=0) if tbl.ndim == 2 else tbl
-            if len(classified_mask) == len(per_asv):
-                track["classified"] = int(per_asv[classified_mask].sum())
+
+            # Determine rank names and values
+            if hasattr(taxa, "columns"):
+                # pandas DataFrame — use column names
+                rank_names = list(taxa.columns)
+                taxa_vals = taxa.values
+            else:
+                taxa_vals = np.asarray(taxa)
+                if taxa_vals.ndim == 1:
+                    taxa_vals = taxa_vals.reshape(-1, 1)
+                rank_names = [
+                    "Kingdom", "Phylum", "Class", "Order",
+                    "Family", "Genus", "Species",
+                ][:taxa_vals.shape[1]]
+
+            if len(per_asv) == taxa_vals.shape[0]:
+                for k, rank in enumerate(rank_names):
+                    mask = np.array(
+                        [taxa_vals[i, k] is not None
+                         and str(taxa_vals[i, k]).strip() != ""
+                         for i in range(taxa_vals.shape[0])]
+                    )
+                    track[rank.lower()] = int(per_asv[mask].sum())
     return track
