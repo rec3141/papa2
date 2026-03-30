@@ -1,22 +1,19 @@
+{% set name = "papa2" %}
 {% set version = "0.1.0" %}
 
 package:
-  name: papa2
+  name: {{ name }}
   version: {{ version }}
 
 source:
-  # Build from local source tree (used with: conda build conda/)
-  path: ..
+  url: https://github.com/rec3141/{{ name }}/archive/refs/tags/v{{ version }}.tar.gz
+  sha256: b2100688cdf5c65f753ab578c356f7c56ef1c28a7751ff013d76af644c8885a8
 
 build:
   number: 0
-  # Build and install via setup.py so that make runs and libpapa2.so is
-  # compiled and placed inside the installed package directory.
-  script: |
-    make libpapa2.so
-    {{ PYTHON }} -m pip install . --no-deps --no-build-isolation -vv
-  # Only Linux/macOS are supported; the C++ code requires POSIX.
   skip: true  # [win]
+  run_exports:
+    - {{ pin_subpackage(name, max_pin="x.x") }}
 
 requirements:
   build:
@@ -33,25 +30,31 @@ requirements:
   run:
     - python >=3.10
     - numpy
+    - pandas
+    - zlib
 
 test:
   imports:
     - papa2
   commands:
-    - papa2 --help || true
+    - python -c "import papa2; print(papa2.__version__)"
 
 about:
   home: https://github.com/rec3141/papa2
   license: MIT
   license_file: LICENSE
-  summary: Python-first amplicon denoising derived from the standalone DADA2 port
+  summary: "Python-first amplicon denoising — byte-identical to R's DADA2"
   description: |
-    papa2 is a Python amplicon denoising tool that wraps a compiled C/C++
-    shared library (libpapa2.so).  It provides a pure-Python interface to the
-    DADA2 denoising algorithm without requiring R.
-  doc_url: https://github.com/rec3141/papa2
+    papa2 is a complete Python port of the DADA2 amplicon denoising pipeline.
+    All 37 R functions have Python equivalents, producing byte-identical results
+    with no R dependency. Includes quality filtering, dereplication, error
+    learning, denoising, paired-end merging, chimera removal, and taxonomy
+    assignment backed by a compiled C/C++ core.
+  doc_url: https://rec3141.github.io/papa2/
   dev_url: https://github.com/rec3141/papa2
 
 extra:
   recipe-maintainers:
     - rec3141
+  identifiers:
+    - doi:10.1038/nmeth.3869

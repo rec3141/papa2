@@ -1,7 +1,9 @@
 # Makefile for building standalone CPU-only libpapa2.so (Python-compatible)
 
-CXX = g++
-CXXFLAGS = -O3 -fPIC -std=c++11 -DNO_RCPP -DNDEBUG -march=native -fopenmp -Wno-format -flto
+CXX ?= g++
+CC ?= gcc
+CXXFLAGS ?= -O3 -fPIC -std=c++11 -DNO_RCPP -DNDEBUG -fopenmp -Wno-format
+CFLAGS ?= -O3 -fPIC -DNDEBUG
 
 # Source files for standalone build (excludes Rmain.cpp, RcppExports.cpp,
 # taxonomy.cpp, chimera.cpp, evaluate.cpp, filter.cpp)
@@ -33,7 +35,7 @@ libpapa2.so: $(OBJS) $(COBJS)
 	$(CXX) -shared -o $@ $^ $(LDFLAGS) -fopenmp -lz
 
 src/%.o: src/%.c
-	gcc -O3 -fPIC -DNDEBUG -march=native -c $< -o $@
+	$(CC) $(CFLAGS) -c $< -o $@
 
 src/%.o: src/%.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
