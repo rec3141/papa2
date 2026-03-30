@@ -69,4 +69,4 @@ pytest
 
 ## License
 
-See [LICENSE](https://github.com/rec3141/dada2/blob/gpu-python/LICENSE).
+See [LICENSE](https://github.com/rec3141/papa2/blob/main/LICENSE).
