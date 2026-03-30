@@ -89,6 +89,11 @@ for i, dd in enumerate(dadas):
 # --- 5. Build sequence table ---
 seqtab = papa2.make_sequence_table(dadas)
 print(f"Sequence table: {seqtab.shape[0]} samples x {seqtab.shape[1]} ASVs")
+
+# --- 6. Visualise read tracking (Sankey diagram) ---
+track = papa2.track_reads(dereps=dereps, dadas=dadas, seqtab=seqtab)
+papa2.plot_sankey(track, output="read_tracking.html")
+print("Sankey diagram saved to read_tracking.html")
 ```
 
 !!! note "Test data"
@@ -134,6 +139,13 @@ seqtab_nochim = papa2.remove_bimera_denovo(seqtab, verbose=True)
 
 print(f"Final: {seqtab_nochim['table'].shape[1]} ASVs across "
       f"{seqtab_nochim['table'].shape[0]} samples")
+
+# Visualise read tracking
+track = papa2.track_reads(
+    dereps=derepFs, dadas=dadaFs, mergers=mergers,
+    seqtab=seqtab, seqtab_nochim=seqtab_nochim["table"],
+)
+papa2.plot_sankey(track, output="read_tracking.html")
 ```
 
 ---

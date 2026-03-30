@@ -228,7 +228,30 @@ Available methods:
 
 ## 8. Track Reads Through the Pipeline
 
-It is good practice to track how many reads pass each step:
+It is good practice to track how many reads pass each step. papa2 provides
+`track_reads()` and `plot_sankey()` to make this easy:
+
+```python
+# Build a summary dict from pipeline stage outputs
+track = papa2.track_reads(
+    dereps=derepFs,
+    dadas=dadaFs,
+    mergers=mergers,
+    seqtab=seqtab,
+    seqtab_nochim=seqtab_nochim["table"],
+)
+print(track)
+# e.g. {'input': 50000, 'denoised': 42000, 'merged': 40000, ...}
+
+# Generate an interactive Sankey diagram
+papa2.plot_sankey(track, output="read_tracking.html")
+```
+
+The Sankey diagram shows read flow between pipeline stages as an interactive
+Plotly figure. Pass `output="read_tracking.html"` to save it, or omit `output`
+to display inline in a Jupyter notebook.
+
+You can also build the tracking table manually for more control:
 
 ```python
 import pandas as pd
