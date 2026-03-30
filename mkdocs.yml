@@ -49,6 +49,7 @@ nav:
   - Home: index.md
   - Quickstart: quickstart.md
   - Tutorial: tutorial.md
+  - Big Data: bigdata.md
   - API Reference: api.md
 
 markdown_extensions:
