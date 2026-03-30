@@ -895,3 +895,211 @@ def seq_complexity(
             result[i] = min_si
 
     return result
+
+
+def plot_sankey(
+    track: dict,
+    title: str = "Read tracking through papa2 pipeline",
+    output: Optional[str] = None,
+    width: int = 900,
+    height: int = 500,
+):
+    """Create a Sankey diagram showing read flow through pipeline stages.
+
+    Args:
+        track: Dict mapping stage names to read/sequence counts.
+            Typical keys (in order):
+            ``{"input": 50000, "filtered": 45000, "denoised": 42000,
+               "merged": 40000, "non-chimeric": 38000}``
+
+            Can also be a list of such dicts (one per sample) — values
+            will be summed across samples.
+
+            Or a pandas DataFrame with stage columns and sample rows
+            (as produced by a read-tracking table).
+
+        title: Plot title.
+        output: If given, save to this path (.html for interactive,
+            .png/.svg/.pdf require kaleido). If None, returns the
+            plotly Figure object.
+        width: Figure width in pixels.
+        height: Figure height in pixels.
+
+    Returns:
+        plotly.graph_objects.Figure if output is None, else None.
+    """
+    try:
+        import plotly.graph_objects as go
+    except ImportError:
+        raise ImportError("plotly is required for plot_sankey: pip install plotly")
+
+    # Normalize input
+    if hasattr(track, "iterrows"):  # DataFrame
+        # Sum columns to get totals per stage
+        stages = list(track.columns)
+        counts = [int(track[col].sum()) for col in stages]
+    elif isinstance(track, list):
+        # List of dicts — sum values per key
+        all_keys = list(track[0].keys())
+        counts = [sum(d.get(k, 0) for d in track) for k in all_keys]
+        stages = all_keys
+    elif isinstance(track, dict):
+        stages = list(track.keys())
+        counts = [int(track[k]) for k in stages]
+    else:
+        raise TypeError(f"track must be a dict, list of dicts, or DataFrame, got {type(track)}")
+
+    if len(stages) < 2:
+        raise ValueError("Need at least 2 stages for a Sankey diagram")
+
+    # Build Sankey data
+    # Nodes: each stage + a "lost" node for each transition
+    node_labels = list(stages)
+    node_colors = []
+
+    # Color palette: blues for retained, reds for lost
+    stage_colors = [
+        "#2196F3", "#1E88E5", "#1976D2", "#1565C0",
+        "#0D47A1", "#0A3D91", "#083080", "#062570",
+    ]
+    lost_color = "#EF5350"
+
+    for i in range(len(stages)):
+        node_colors.append(stage_colors[i % len(stage_colors)])
+
+    # Add "lost" nodes
+    for i in range(len(stages) - 1):
+        lost = counts[i] - counts[i + 1]
+        if lost > 0:
+            node_labels.append(f"lost ({stages[i]}→{stages[i+1]})")
+            node_colors.append(lost_color)
+
+    source = []
+    target = []
+    value = []
+    link_colors = []
+
+    lost_idx = len(stages)  # first "lost" node index
+    for i in range(len(stages) - 1):
+        retained = counts[i + 1]
+        lost = counts[i] - counts[i + 1]
+
+        # Retained flow: stage[i] → stage[i+1]
+        if retained > 0:
+            source.append(i)
+            target.append(i + 1)
+            value.append(retained)
+            link_colors.append("rgba(33, 150, 243, 0.4)")
+
+        # Lost flow: stage[i] → lost node
+        if lost > 0:
+            source.append(i)
+            target.append(lost_idx)
+            value.append(lost)
+            link_colors.append("rgba(239, 83, 80, 0.4)")
+            lost_idx += 1
+
+    # Format counts for labels
+    def fmt(n):
+        if n >= 1_000_000:
+            return f"{n/1_000_000:.1f}M"
+        if n >= 1_000:
+            return f"{n/1_000:.1f}K"
+        return str(n)
+
+    node_labels_fmt = []
+    for i, label in enumerate(node_labels):
+        if i < len(counts):
+            node_labels_fmt.append(f"{label}<br>{fmt(counts[i])}")
+        else:
+            # Lost node — find its value
+            lost_val = 0
+            for j, s in enumerate(source):
+                if target[j] == i:
+                    lost_val = value[j]
+                    break
+            node_labels_fmt.append(f"{label}<br>{fmt(lost_val)}")
+
+    fig = go.Figure(data=[go.Sankey(
+        node=dict(
+            pad=20,
+            thickness=30,
+            line=dict(color="black", width=0.5),
+            label=node_labels_fmt,
+            color=node_colors,
+        ),
+        link=dict(
+            source=source,
+            target=target,
+            value=value,
+            color=link_colors,
+        ),
+    )])
+
+    fig.update_layout(
+        title_text=title,
+        font_size=13,
+        width=width,
+        height=height,
+    )
+
+    if output:
+        if output.endswith(".html"):
+            fig.write_html(output)
+        else:
+            fig.write_image(output)
+        return None
+
+    return fig
+
+
+def track_reads(
+    dereps=None,
+    dadas=None,
+    mergers=None,
+    seqtab=None,
+    seqtab_nochim=None,
+):
+    """Build a read-tracking dict from pipeline stage outputs.
+
+    Pass whichever stages you have — earlier stages are required for
+    later ones to make sense, but all are optional.
+
+    Args:
+        dereps: List of derep dicts (from derep_fastq)
+        dadas: List of dada result dicts
+        mergers: List of merger lists (from merge_pairs)
+        seqtab: Sequence table (DataFrame from make_sequence_table)
+        seqtab_nochim: Chimera-filtered sequence table
+
+    Returns:
+        Dict mapping stage names to total read counts.
+        Pass directly to plot_sankey().
+    """
+    track = {}
+    if dereps is not None:
+        track["input"] = int(sum(d["abundances"].sum() for d in dereps))
+    if dadas is not None:
+        if isinstance(dadas, dict):
+            dadas = [dadas]
+        track["denoised"] = int(sum(sum(d["denoised"].values()) for d in dadas))
+    if mergers is not None:
+        total = 0
+        for m in mergers:
+            if isinstance(m, list):
+                total += sum(x["abundance"] for x in m if x.get("accept", True))
+            elif isinstance(m, dict) and "abundance" in m:
+                if m.get("accept", True):
+                    total += m["abundance"]
+        track["merged"] = int(total)
+    if seqtab is not None:
+        if hasattr(seqtab, "values"):
+            track["tabled"] = int(seqtab.values.sum())
+        elif isinstance(seqtab, dict) and "table" in seqtab:
+            track["tabled"] = int(seqtab["table"].sum())
+    if seqtab_nochim is not None:
+        if hasattr(seqtab_nochim, "values"):
+            track["non-chimeric"] = int(seqtab_nochim.values.sum())
+        elif isinstance(seqtab_nochim, dict) and "table" in seqtab_nochim:
+            track["non-chimeric"] = int(seqtab_nochim["table"].sum())
+    return track

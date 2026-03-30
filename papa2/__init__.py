@@ -12,6 +12,8 @@ from .utils import (
     collapse_no_mismatch,
     make_sequence_table,
     plot_quality_profile,
+    plot_sankey,
+    track_reads,
     uniquesto_fasta,
     write_fasta,
     is_phix,
