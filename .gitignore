@@ -1,12 +1,10 @@
 # Build artifacts
-src/*.o
-src/*.so
+*.o
+*.so
 src/Makevars
-libdada2.so
 
 # Python cache
 __pycache__/
-papa2/__pycache__/
 *.pyc
 .pytest_cache/
 .venv/
@@ -14,7 +12,13 @@ build/
 dist/
 *.egg-info/
 
+# Test outputs
+tests/r_outputs/
+
+# Generated files
+*.html
+site/
+
 # Editor
 *.swp
 *~
-site/
