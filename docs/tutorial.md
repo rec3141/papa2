@@ -282,8 +282,28 @@ print(df.to_string(index=False))
 ## 9. Assign Taxonomy
 
 papa2 includes a k-mer-based Bayesian classifier (`assign_species`) that matches
-R's `assignTaxonomy`. Download a formatted reference database (e.g. SILVA, GTDB)
-and point papa2 to it:
+R's `assignTaxonomy`. Download a formatted reference database and point papa2 to it.
+
+### Download reference databases
+
+DADA2-formatted training files are available from
+[the DADA2 reference page](https://benjjneb.github.io/dada2/training.html).
+Common choices:
+
+| Database | File | Link |
+|----------|------|------|
+| SILVA v138.1 (genus) | `silva_nr99_v138.1_train_set.fa.gz` | [Download](https://zenodo.org/records/4587955/files/silva_nr99_v138.1_train_set.fa.gz) |
+| SILVA v138.1 (species) | `silva_species_assignment_v138.1.fa.gz` | [Download](https://zenodo.org/records/4587955/files/silva_species_assignment_v138.1.fa.gz) |
+| GTDB r220 (genus) | `GTDB_bac120_arc53_ssu_r220_genus.fa.gz` | [Download](https://zenodo.org/records/13901193/files/GTDB_bac120_arc53_ssu_r220_genus.fa.gz) |
+| GTDB r220 (species) | `GTDB_bac120_arc53_ssu_r220_species.fa.gz` | [Download](https://zenodo.org/records/13901193/files/GTDB_bac120_arc53_ssu_r220_species.fa.gz) |
+
+```bash
+# Example: download SILVA v138.1
+wget https://zenodo.org/records/4587955/files/silva_nr99_v138.1_train_set.fa.gz
+wget https://zenodo.org/records/4587955/files/silva_species_assignment_v138.1.fa.gz
+```
+
+### Run the classifier
 
 ```python
 # Naive Bayesian classifier (genus-level)
