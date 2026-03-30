@@ -135,4 +135,4 @@ If you use papa2 in published research, please cite the original DADA2 paper:
 
 ## License
 
-LGPL-3.0 — see [LICENSE](LICENSE). This matches the upstream [DADA2 license](https://github.com/benjjneb/dada2/blob/master/LICENSE).
+LGPL-3.0 — see [LICENSE](LICENSE).
