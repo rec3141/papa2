@@ -44,8 +44,8 @@ for name, fwd, rev in zip(sample_names, filt_fwd, filt_rev):
     print(f"Processing: {name}")
     drF = papa2.derep_fastq(fwd)
     drR = papa2.derep_fastq(rev)
-    ddF = papa2.dada([drF], err=errF, verbose=False)[0]
-    ddR = papa2.dada([drR], err=errR, verbose=False)[0]
+    ddF = papa2.dada(drF, err=errF, verbose=False)
+    ddR = papa2.dada(drR, err=errR, verbose=False)
     merger = papa2.merge_pairs(ddF, drF, ddR, drR, verbose=False)
     mergers_dict[name] = merger
 
