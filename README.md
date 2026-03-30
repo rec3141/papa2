@@ -1,6 +1,6 @@
 # papa2
 
-Python-first amplicon denoising derived from the standalone CPU-only port of DADA2.
+Python-first amplicon denoising derived from the R-based DADA2.
 
 This repo contains:
 - a pure Python package in `papa2/`
@@ -8,10 +8,6 @@ This repo contains:
 - pytest-based regression coverage for the Python wrapper and denoising parity checks
 
 This repo does not include the original R package structure.
-
-## Status
-
-The current project is CPU-only.
 
 ## Provenance
 
