@@ -290,11 +290,13 @@ def assign_species(
     # Build a kmer index over reference sequences for fast candidate lookup.
     # Instead of checking every query against every ref (O(n*m)), we only
     # verify substring containment for refs that share a kmer with the query.
+    # Index every position so we do not miss true substring matches whose
+    # shared kmer starts at a non-binned offset.
     _KMER_SIZE = 8
     kmer_index: Dict[str, List[int]] = {}
     for j, rseq in enumerate(ref_seqs):
         rseq_upper = rseq.upper()
-        for pos in range(0, len(rseq_upper) - _KMER_SIZE + 1, _KMER_SIZE):
+        for pos in range(len(rseq_upper) - _KMER_SIZE + 1):
             kmer = rseq_upper[pos:pos + _KMER_SIZE]
             if kmer not in kmer_index:
                 kmer_index[kmer] = []
@@ -302,6 +304,8 @@ def assign_species(
 
     def _find_hits(query_up):
         """Find ref indices containing query_up as a substring, using kmer pre-filter."""
+        if len(query_up) < _KMER_SIZE:
+            return [j for j, ref in enumerate(ref_seqs) if query_up in ref.upper()]
         candidates: set = set()
         for pos in range(len(query_up) - _KMER_SIZE + 1):
             kmer = query_up[pos:pos + _KMER_SIZE]
@@ -590,6 +594,29 @@ def make_sequence_table(
             else:
                 raise TypeError(f"Unexpected item type in samples list: {type(item)}")
         samples_dict = converted
+
+    # Also handle {name: [merger_list]} dicts and {name: dada_result} dicts
+    converted2 = {}
+    for sample_name, value in samples_dict.items():
+        if isinstance(value, list):
+            # List of merger dicts from merge_pairs
+            merged = {}
+            for m in value:
+                if isinstance(m, dict) and "sequence" in m:
+                    if m.get("accept", True):
+                        seq = m["sequence"]
+                        merged[seq] = merged.get(seq, 0) + m["abundance"]
+                else:
+                    break  # Not merger dicts, leave as-is
+            else:
+                converted2[sample_name] = merged
+                continue
+            converted2[sample_name] = value
+        elif isinstance(value, dict) and "denoised" in value:
+            converted2[sample_name] = value["denoised"]
+        else:
+            converted2[sample_name] = value
+    samples_dict = converted2
 
     logger.info("[INFO] make_sequence_table: %d samples.", len(samples_dict))
 
@@ -1374,33 +1401,58 @@ def merge_sequence_tables(
     if len(tables) == 1:
         return tables[0]
 
-    # Collect all unique sequences and their sample counts
-    # Each table contributes rows (samples) with counts for its sequences
-    all_seqs_set: Dict[str, int] = {}  # seq -> index in merged
-    sample_rows: List[np.ndarray] = []  # list of arrays, one per sample
-    seq_lists: List[List[str]] = []
-
-    # If try_rc, build a mapping of RC sequences
-    rc_map: Dict[str, str] = {}  # maps RC form -> canonical form
-
-    # First pass: gather all sequences
+    # Determine canonical orientation for each sequence before building the
+    # merged matrix so try_rc is independent of input order.
     all_seqs_ordered: List[str] = []
-    for tbl in tables:
-        tseqs = tbl["seqs"]
-        for seq in tseqs:
-            canon = seq
-            if try_rc and seq not in all_seqs_set:
-                seq_rc = _rc(seq)
-                if seq_rc in all_seqs_set:
-                    # This sequence's RC is already known; map it
-                    rc_map[seq] = seq_rc
-                    canon = seq_rc
-            if canon not in all_seqs_set:
-                all_seqs_set[canon] = len(all_seqs_ordered)
-                all_seqs_ordered.append(canon)
+    seen_seqs: set[str] = set()
+    seq_totals: Dict[str, int] = {}
+    first_seen: Dict[str, int] = {}
+    sample_names: List[str] = []
 
-    n_seqs = len(all_seqs_ordered)
-    seq_index = {s: i for i, s in enumerate(all_seqs_ordered)}
+    for tbl_idx, tbl in enumerate(tables):
+        tseqs = tbl["seqs"]
+        tmat = np.asarray(tbl["table"])
+        if tmat.ndim == 1:
+            tmat = tmat.reshape(1, -1)
+        totals = tmat.sum(axis=0)
+        for seq, total in zip(tseqs, totals):
+            seq_totals[seq] = seq_totals.get(seq, 0) + int(total)
+            if seq not in seen_seqs:
+                seen_seqs.add(seq)
+                first_seen[seq] = len(all_seqs_ordered)
+                all_seqs_ordered.append(seq)
+
+        tbl_sample_names = tbl.get("sample_names")
+        if tbl_sample_names:
+            sample_names.extend(list(tbl_sample_names))
+        else:
+            for sample_idx in range(tmat.shape[0]):
+                sample_names.append(f"table{tbl_idx + 1}_sample{sample_idx + 1}")
+
+    canonical_seq: Dict[str, str] = {}
+    all_seqs_set: Dict[str, int] = {}
+    canonical_order: List[str] = []
+    for seq in all_seqs_ordered:
+        if seq in canonical_seq:
+            continue
+        canon = seq
+        if try_rc:
+            seq_rc = _rc(seq)
+            if seq_rc in seq_totals and seq_rc != seq:
+                seq_total = seq_totals.get(seq, 0)
+                rc_total = seq_totals.get(seq_rc, 0)
+                if rc_total > seq_total:
+                    canon = seq_rc
+                elif rc_total == seq_total and first_seen.get(seq_rc, float("inf")) < first_seen.get(seq, float("inf")):
+                    canon = seq_rc
+                canonical_seq[seq_rc] = canon
+        canonical_seq[seq] = canon
+        if canon not in all_seqs_set:
+            all_seqs_set[canon] = len(canonical_order)
+            canonical_order.append(canon)
+
+    n_seqs = len(canonical_order)
+    seq_index = {s: i for i, s in enumerate(canonical_order)}
 
     # Second pass: build merged count matrix
     all_sample_counts: List[np.ndarray] = []
@@ -1415,7 +1467,7 @@ def merge_sequence_tables(
         for si in range(nsamples):
             row = np.zeros(n_seqs, dtype=np.int64)
             for ji, seq in enumerate(tseqs):
-                canon = rc_map.get(seq, seq)
+                canon = canonical_seq.get(seq, seq)
                 idx = seq_index[canon]
                 row[idx] += tmat[si, ji]
             all_sample_counts.append(row)
@@ -1433,9 +1485,13 @@ def merge_sequence_tables(
         order = np.arange(n_seqs)
 
     merged_mat = merged_mat[:, order]
-    merged_seqs = [all_seqs_ordered[i] for i in order]
+    merged_seqs = [canonical_order[i] for i in order]
 
-    return {"table": merged_mat, "seqs": merged_seqs}
+    return {
+        "table": merged_mat,
+        "seqs": merged_seqs,
+        "sample_names": sample_names,
+    }
 
 
 # ---------------------------------------------------------------------------
