@@ -23,7 +23,7 @@ SRCS = src/dada2_capi.cpp \
        src/nwalign_vectorized.cpp
 
 OBJS = $(SRCS:.cpp=.o)
-LDFLAGS = -lm
+LDFLAGS += -lm -lz
 
 .PHONY: all clean docs
 
@@ -32,7 +32,7 @@ all: libpapa2.so
 COBJS = $(CSRCS:.c=.o)
 
 libpapa2.so: $(OBJS) $(COBJS)
-	$(CXX) -shared -o $@ $^ $(LDFLAGS) -fopenmp -lz
+	$(CXX) -shared -o $@ $^ $(LDFLAGS) -fopenmp
 
 src/%.o: src/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
