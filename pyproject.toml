@@ -28,7 +28,8 @@ classifiers = [
   "Operating System :: MacOS",
 ]
 dependencies = [
-  "numpy"
+  "numpy",
+  "pandas"
 ]
 
 [project.urls]
