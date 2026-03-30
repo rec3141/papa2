@@ -44,108 +44,92 @@ print(papa2.__version__)
 
 ## Minimal Example
 
-This example walks through the core DADA2 workflow on a single pair of FASTQ files
-(forward and reverse reads from a 16S amplicon experiment).
+papa2 ships with two small test FASTQ files in `tests/data/`. This example
+runs the core denoising pipeline on them — no external data needed.
 
 ```python
 import papa2
 
-# --- 1. Dereplicate FASTQ files ---
-# derep_fastq() collapses identical reads and tracks abundances
-derepF = papa2.derep_fastq("sample_R1.fastq.gz", verbose=True)
-derepR = papa2.derep_fastq("sample_R2.fastq.gz", verbose=True)
+# The bundled test files (forward reads from two 16S amplicon samples)
+fwd_files = ["tests/data/sam1F.fastq.gz", "tests/data/sam2F.fastq.gz"]
 
-# Each derep dict contains:
-#   seqs        - unique sequences (sorted by abundance)
-#   abundances  - read counts per unique
-#   quals       - average quality scores (n_uniques x max_seqlen)
-#   map         - per-read index into the unique sequence list
+# --- 1. Dereplicate ---
+dereps = [papa2.derep_fastq(f, verbose=True) for f in fwd_files]
+# Read 1500 reads, 896 unique sequences
+# Read 1500 reads, 906 unique sequences
 
 # --- 2. Learn error rates ---
-# learn_errors() uses LOESS smoothing on a set of training FASTQ files
-# to build a (16 x nqual) error rate matrix (one entry per base transition
-# per quality score).
-errF = papa2.learn_errors(["sample_R1.fastq.gz"], verbose=True)
-errR = papa2.learn_errors(["sample_R2.fastq.gz"], verbose=True)
+err = papa2.learn_errors(fwd_files, verbose=True)
+# 750000 total bases in 3000 reads from 2 samples ...
 
-# --- 3. Denoise with DADA ---
-# dada() infers the true biological sequences (ASVs) and returns a
-# result dict containing 'denoised' (seq -> abundance mapping).
-dadaF = papa2.dada(derepF, err=errF, verbose=True)
-dadaR = papa2.dada(derepR, err=errR, verbose=True)
+# --- 3. Denoise ---
+dadas = papa2.dada(dereps, err=err, verbose=True)
 
-# --- 4. Merge paired-end reads ---
-# merge_pairs() aligns denoised forward and reverse reads and returns
-# merged amplicon sequences, discarding non-overlapping pairs.
-mergers = papa2.merge_pairs(dadaF, derepF, dadaR, derepR, verbose=True)
+# --- 4. Inspect results ---
+for i, dd in enumerate(dadas):
+    print(f"Sample {i+1}: {len(dd['denoised'])} ASVs, "
+          f"{sum(dd['denoised'].values())} reads")
 
-# mergers is a list of dicts sorted by abundance, each with:
-#   sequence   - merged amplicon string
-#   abundance  - supporting read count
-#   accept     - True if overlap and mismatch criteria were met
-
-# --- 5. Remove chimeras ---
-# Build a per-sample sequence table first, then filter bimeras.
-seqtab = papa2.make_sequence_table([mergers])
-
-# remove_bimera_denovo() uses consensus detection across samples by default.
-seqtab_nochim = papa2.remove_bimera_denovo(seqtab, method="consensus", verbose=True)
-
-print(f"ASVs before chimera removal: {len(seqtab['seqs'])}")
-print(f"ASVs after chimera removal:  {len(seqtab_nochim['seqs'])}")
-
-# --- 6. Inspect results ---
-# seqtab_nochim['table'] is a numpy array (samples x ASVs)
-# seqtab_nochim['seqs']  is the list of ASV sequences
-table = seqtab_nochim["table"]
-seqs  = seqtab_nochim["seqs"]
-print(f"Sequence table shape: {table.shape}")
-print(f"First ASV: {seqs[0][:60]}...")
+# --- 5. Build sequence table ---
+seqtab = papa2.make_sequence_table(dadas)
+print(f"Sequence table: {seqtab['table'].shape[0]} samples x "
+      f"{seqtab['table'].shape[1]} ASVs")
 ```
+
+!!! note "Test data"
+    The bundled files are small subsets (1500 reads each) of the same samples
+    used in the [DADA2 tutorial](https://benjjneb.github.io/dada2/tutorial.html).
+    For real analyses you'll typically have 10K–200K reads per sample.
 
 ---
 
-## Multiple Samples
+## Paired-End Example
 
-To process many samples in parallel, pass lists of paths or derep dicts:
+For paired-end data, dereplication and denoising are done separately on
+forward and reverse reads, then merged:
 
 ```python
-import glob
 import papa2
 
-fwd_files = sorted(glob.glob("data/*_R1.fastq.gz"))
-rev_files  = sorted(glob.glob("data/*_R2.fastq.gz"))
+# Forward and reverse FASTQ files (replace with your own paths)
+fwd_files = ["sample1_R1.fastq.gz", "sample2_R1.fastq.gz"]
+rev_files = ["sample1_R2.fastq.gz", "sample2_R2.fastq.gz"]
 
-# Learn errors from a representative subset of forward reads
-errF = papa2.learn_errors(fwd_files[:10], verbose=True)
-errR = papa2.learn_errors(rev_files[:10], verbose=True)
+# Learn errors from forward and reverse reads separately
+errF = papa2.learn_errors(fwd_files, verbose=True)
+errR = papa2.learn_errors(rev_files, verbose=True)
 
-# Dereplicate all samples
+# Dereplicate
 derepFs = [papa2.derep_fastq(f) for f in fwd_files]
 derepRs = [papa2.derep_fastq(f) for f in rev_files]
 
-# Denoise all forward and reverse reads (runs in parallel via DADA2_WORKERS)
-dadaFs = papa2.dada(derepFs, err=errF, verbose=False)
-dadaRs = papa2.dada(derepRs, err=errR, verbose=False)
+# Denoise
+dadaFs = papa2.dada(derepFs, err=errF)
+dadaRs = papa2.dada(derepRs, err=errR)
 
-# Merge each sample
+# Merge paired reads
 mergers = [
     papa2.merge_pairs(dF, drF, dR, drR)
     for dF, drF, dR, drR in zip(dadaFs, derepFs, dadaRs, derepRs)
 ]
 
-# Build joint sequence table across all samples
+# Build sequence table and remove chimeras
 seqtab = papa2.make_sequence_table(mergers)
-
-# Remove chimeras
 seqtab_nochim = papa2.remove_bimera_denovo(seqtab, verbose=True)
+
+print(f"Final: {seqtab_nochim['table'].shape[1]} ASVs across "
+      f"{seqtab_nochim['table'].shape[0]} samples")
 ```
 
-!!! tip "Parallelism"
-    Set the environment variable `DADA2_WORKERS` to control how many parallel
-    workers are used when denoising multiple samples:
-    ```bash
-    export DADA2_WORKERS=8
-    ```
-    Set `OMP_NUM_THREADS=1` before importing papa2 for best multi-sample
-    performance (avoids contention between Python-level and OpenMP parallelism).
+---
+
+## Parallelism
+
+Set `DADA2_WORKERS` to control parallel workers for multi-sample denoising:
+
+```bash
+export DADA2_WORKERS=8
+```
+
+Set `OMP_NUM_THREADS=1` before importing papa2 for best multi-sample
+performance (avoids contention between Python-level and OpenMP parallelism).
