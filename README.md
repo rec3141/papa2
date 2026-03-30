@@ -1,12 +1,14 @@
 # papa2
 
-**Python-first amplicon denoising — byte-identical to R's DADA2, 8x faster**
+**Python-first amplicon denoising — byte-identical to R's DADA2**
 
 [![CI](https://github.com/rec3141/papa2/actions/workflows/ci.yml/badge.svg)](https://github.com/rec3141/papa2/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
+[![Docs](https://github.com/rec3141/papa2/actions/workflows/docs.yml/badge.svg)](https://rec3141.github.io/papa2/)
+[![Container](https://github.com/rec3141/papa2/actions/workflows/container.yml/badge.svg)](https://github.com/rec3141/papa2/pkgs/container/papa2)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-`papa2` is a pure-Python + compiled-C reimplementation of the [DADA2](https://github.com/benjjneb/dada2) amplicon denoising pipeline. It produces **byte-identical ASV output** to R's DADA2 while running significantly faster — no R installation required.
+`papa2` is a complete Python port of the [DADA2](https://github.com/benjjneb/dada2) amplicon denoising pipeline. All 37 R functions have Python equivalents, producing **byte-identical results** ([20/20 parity tests pass](tests/compare_with_r.py)) with no R dependency.
 
 Full documentation: **https://rec3141.github.io/papa2**
 
@@ -14,24 +16,38 @@ Full documentation: **https://rec3141.github.io/papa2**
 
 ## Key Features
 
-- **Byte-identical to R dada2** — same ASVs, same error models, validated on real datasets
-- **4–8x faster than R** on real datasets (tested up to 40M reads; see benchmarks below)
-- **No R dependency** — standalone Python package with a compiled C core (`libpapa2.so`)
-- **Full DADA2 pipeline** — filter & trim, dereplication, error learning, denoising, paired-end merging, chimera removal, and taxonomy assignment
-- **Parallel multi-sample processing** — scales across all available CPU cores
+- **Byte-identical to R dada2** — same ASVs, same error models, same quality filtering, [validated against R on every function](tests/compare_with_r.py)
+- **Complete port** — all 37 user-facing R functions: `filter_and_trim`, `derep_fastq`, `learn_errors`, `dada`, `merge_pairs`, `make_sequence_table`, `remove_bimera_denovo`, `assign_taxonomy`, and more
+- **No R dependency** — standalone Python package with a compiled C/C++ core (`libpapa2.so`)
+- **Parallel multi-sample processing** — scales across CPU cores via `ProcessPoolExecutor`
+- **Interactive visualisation** — Sankey diagrams for read tracking, error rate plots, quality profiles
+- **Container-ready** — Docker and Apptainer (HPC) images on GHCR
 
 ---
 
 ## Quick Install
 
-**pip:**
+### Container (recommended for HPC)
+
 ```bash
-pip install papa2
+# Docker
+docker pull ghcr.io/rec3141/papa2:latest
+docker run -v $(pwd):/data ghcr.io/rec3141/papa2 python3 my_script.py
+
+# Apptainer (HPC)
+apptainer pull papa2.sif docker://ghcr.io/rec3141/papa2:latest
+apptainer exec papa2.sif python3 my_script.py
 ```
 
-**conda:**
+### From source
+
 ```bash
-conda install -c conda-forge papa2
+git clone https://github.com/rec3141/papa2.git
+cd papa2
+conda env create -f environment.yml
+conda activate papa2-dev
+make libpapa2.so
+pip install -e .
 ```
 
 ---
@@ -41,76 +57,69 @@ conda install -c conda-forge papa2
 ```python
 import papa2
 
-# Learn error model from a set of FASTQ files
-err = papa2.learn_errors(fastq_files)
+# Forward and reverse FASTQ files
+fwd_files = ["sample1_R1.fastq.gz", "sample2_R1.fastq.gz"]
+rev_files = ["sample1_R2.fastq.gz", "sample2_R2.fastq.gz"]
 
-# Dereplicate reads
-derep = papa2.dereplicate(fastq_files)
+# 1. Filter and trim
+papa2.filter_and_trim(
+    fwd_files, filt_fwd,
+    rev=rev_files, filt_rev=filt_rev,
+    trunc_len=(240, 200), max_ee=(2, 2), rm_phix=True,
+)
 
-# Denoise
-dada_result = papa2.dada(derep, err)
+# 2. Learn error rates
+errF = papa2.learn_errors(filt_fwd)
+errR = papa2.learn_errors(filt_rev)
 
-# Merge paired-end reads
-merged = papa2.merge_pairs(dada_result["fwd"], derep["fwd"],
-                           dada_result["rev"], derep["rev"])
+# 3. Dereplicate, denoise, merge
+derepFs = [papa2.derep_fastq(f) for f in filt_fwd]
+derepRs = [papa2.derep_fastq(f) for f in filt_rev]
+dadaFs = papa2.dada(derepFs, err=errF)
+dadaRs = papa2.dada(derepRs, err=errR)
+mergers = [papa2.merge_pairs(dF, drF, dR, drR)
+           for dF, drF, dR, drR in zip(dadaFs, derepFs, dadaRs, derepRs)]
 
-# Build sequence table and remove chimeras
-seqtab = papa2.make_sequence_table(merged)
+# 4. Sequence table and chimera removal
+seqtab = papa2.make_sequence_table(mergers)
 seqtab_nochim = papa2.remove_bimera_denovo(seqtab)
+
+# 5. Taxonomy
+taxa = papa2.assign_taxonomy(seqtab_nochim["seqs"], "silva_nr99_v138.1_train_set.fa.gz")
+
+# 6. Visualise
+track = papa2.track_reads(dereps=derepFs, dadas=dadaFs, mergers=mergers,
+                          seqtab=seqtab, seqtab_nochim=seqtab_nochim, taxa=taxa)
+papa2.plot_sankey(track, output="read_tracking.html")
 ```
 
-For a complete walkthrough see the [Quickstart guide](https://rec3141.github.io/papa2/quickstart/) and [Tutorial](https://rec3141.github.io/papa2/tutorial/).
-
----
-
-## Performance Benchmarks
-
-Benchmarks run on a single workstation (AMD EPYC, 32 cores). papa2 uses all available cores; R dada2 uses a single core by default.
-
-| Dataset | papa2 | R dada2 | Speedup |
-|---|---|---|---|
-| 10 samples, 257K reads | 49s | 85s | 1.7x |
-| 84 samples, 4M reads | 174s | 1500s | 8.6x |
-| 1790 samples, 40M reads | ~25 min | ~5h | ~12x |
+See the [Quickstart](https://rec3141.github.io/papa2/quickstart/), [Tutorial](https://rec3141.github.io/papa2/tutorial/), and [Big Data Workflow](https://rec3141.github.io/papa2/bigdata/) for complete walkthroughs.
 
 ---
 
 ## Project Layout
 
 ```
-papa2/        Python package
-src/          standalone C/C++ native core (compiled to libpapa2.so)
-tests/        pytest suite with bundled FASTQ fixtures
-docs/         MkDocs documentation source
-```
-
----
-
-## Development Setup
-
-```bash
-# Create and activate the dev environment
-conda env create -f environment.yml
-conda activate papa2-dev
-
-# Build the native shared library
-make clean libpapa2.so
-
-# Run the test suite
-pytest
-```
-
-Verify the package loads:
-
-```bash
-python -c "import papa2; print(papa2.__version__)"
+papa2/           Python package
+  filter.py        filter_and_trim, fastq_filter, fastq_paired_filter
+  io.py            derep_fastq
+  dada.py          dada, learn_errors
+  error.py         loess_errfun, pacbio_errfun, make_binned_qual_errfun
+  taxonomy.py      assign_taxonomy
+  paired.py        merge_pairs
+  chimera.py       remove_bimera_denovo
+  utils.py         sequence tables, plotting, QC, taxonomy, export
+  _cdada.py        ctypes bindings to libpapa2.so
+src/             Standalone C/C++ core
+tests/           Parity tests against R dada2
+docs/            MkDocs documentation source
 ```
 
 ---
 
 ## Provenance
 
-`papa2` was extracted from the development branch [rec3141/dada2@gpu-python](https://github.com/rec3141/dada2/tree/gpu-python), which itself forked from upstream DADA2 at commit [72da7700b](https://github.com/benjjneb/dada2/commit/72da7700b58290e40cdce4b0856314aecf2b9dc4) (2026-02-13).
+`papa2` was extracted from [rec3141/dada2@gpu-python](https://github.com/rec3141/dada2/tree/gpu-python), which forked from upstream DADA2 at commit [72da7700b](https://github.com/benjjneb/dada2/commit/72da7700b58290e40cdce4b0856314aecf2b9dc4) (2026-02-13).
 
 ---
 
