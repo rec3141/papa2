@@ -1,8 +1,8 @@
 site_name: papa2
 site_description: Python-first amplicon denoising derived from DADA2
-site_url: https://papa2.readthedocs.io/
-repo_url: https://github.com/rec3141/dada2
-repo_name: rec3141/dada2
+site_url: https://rec3141.github.io/papa2/
+repo_url: https://github.com/rec3141/papa2
+repo_name: rec3141/papa2
 
 theme:
   name: material
