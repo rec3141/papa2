@@ -1,5 +1,7 @@
 # Quickstart
 
+[:material-download: Download quickstart.py](scripts/quickstart.py){ .md-button }
+
 ## Installation
 
 ### Container (Docker / Apptainer)

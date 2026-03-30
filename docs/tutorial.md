@@ -1,5 +1,7 @@
 # Tutorial
 
+[:material-download: Download tutorial.py](scripts/tutorial.py){ .md-button }
+
 This tutorial walks through the standard DADA2 amplicon processing workflow using
 papa2's Python API. The workflow mirrors the canonical
 [DADA2 R tutorial](https://benjjneb.github.io/dada2/tutorial.html) but uses Python

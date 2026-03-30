@@ -1,5 +1,7 @@
 # Big Data Workflow
 
+[:material-download: Download bigdata.py](scripts/bigdata.py){ .md-button }
+
 This workflow is designed for large-scale amplicon studies — hundreds of samples,
 HiSeq-scale data (100M+ reads), or multi-run projects. It mirrors the
 [DADA2 Big Data tutorial](https://benjjneb.github.io/dada2/bigdata.html) but
