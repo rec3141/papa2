@@ -1,0 +1,37 @@
+name: Deploy docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'papa2/**'
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install mkdocs
+        run: pip install mkdocs-material "mkdocstrings[python]"
+
+      - name: Build libpapa2.so (needed for mkdocstrings import)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends g++ gcc zlib1g-dev make
+          make libpapa2.so
+
+      - name: Install papa2
+        run: pip install numpy && pip install -e .
+
+      - name: Deploy to GitHub Pages
+        run: mkdocs gh-deploy --force
