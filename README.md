@@ -6,7 +6,7 @@
 [![Docs](https://github.com/rec3141/papa2/actions/workflows/docs.yml/badge.svg)](https://rec3141.github.io/papa2/)
 [![Container](https://github.com/rec3141/papa2/actions/workflows/container.yml/badge.svg)](https://github.com/rec3141/papa2/pkgs/container/papa2)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: LGPL v3](https://img.shields.io/badge/License-LGPL_v3-blue.svg)](LICENSE)
 
 `papa2` is a complete Python port of the [DADA2](https://github.com/benjjneb/dada2) amplicon denoising pipeline. All 37 R functions have Python equivalents, producing **byte-identical results** ([20/20 parity tests pass](tests/compare_with_r.py)) with no R dependency.
 
@@ -135,4 +135,4 @@ If you use papa2 in published research, please cite the original DADA2 paper:
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+LGPL-3.0 — see [LICENSE](LICENSE). This matches the upstream [DADA2 license](https://github.com/benjjneb/dada2/blob/master/LICENSE).
