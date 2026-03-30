@@ -1,9 +1,10 @@
-"""FASTQ reading and dereplication."""
+"""FASTQ reading, filtering, and dereplication."""
 
 import gzip
 import os
 import ctypes as ct
 import numpy as np
+from concurrent.futures import ProcessPoolExecutor
 
 # Try to load C dereplication from libpapa2.so
 _lib_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "libpapa2.so")

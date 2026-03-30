@@ -1165,3 +1165,770 @@ def track_reads(
                     )
                     track[rank.lower()] = int(per_asv[mask].sum())
     return track
+
+
+# ---------------------------------------------------------------------------
+# get_errors -- extract error information from various dada2 objects
+# ---------------------------------------------------------------------------
+
+def get_errors(
+    obj,
+    detailed: bool = False,
+    enforce: bool = True,
+):
+    """Extract error rate information from various dada2 object types.
+
+    Mirrors R's ``getErrors``.
+
+    Supported inputs:
+        - numpy array: used directly as ``err_out``.
+        - dada result dict: extracts ``err_out``, ``err_in``, ``trans``.
+        - list of dada result dicts: verifies all share the same ``err_out``,
+          accumulates ``trans`` across samples.
+
+    Args:
+        obj: Input object containing error information.
+        detailed: If True, return a dict with ``err_out``, ``err_in``, and
+            ``trans`` keys.  If False (default), return just the ``err_out``
+            matrix.
+        enforce: If True, validate that the error matrix has 16 rows,
+            is numeric, and all values are in [0, 1].
+
+    Returns:
+        numpy array (16, ncol) if ``detailed=False``, or a dict with
+        ``err_out``, ``err_in``, ``trans`` keys if ``detailed=True``.
+    """
+    err_out = None
+    err_in = None
+    trans = None
+
+    if isinstance(obj, np.ndarray):
+        err_out = obj
+
+    elif isinstance(obj, dict):
+        err_out = obj.get("err_out", None)
+        err_in = obj.get("err_in", None)
+        trans = obj.get("trans", None)
+        # If the dict doesn't have err_out but has an error matrix shape
+        if err_out is None and "err" in obj:
+            err_out = obj["err"]
+
+    elif isinstance(obj, list):
+        # List of dada result dicts
+        if len(obj) == 0:
+            raise ValueError("Empty list provided to get_errors.")
+
+        # Use the first element's err_out as reference
+        first = obj[0]
+        if isinstance(first, dict):
+            err_out = first.get("err_out", None)
+            err_in = first.get("err_in", None)
+            trans = first.get("trans", None)
+            if trans is not None:
+                trans = trans.copy().astype(np.float64)
+
+            for item in obj[1:]:
+                if not isinstance(item, dict):
+                    raise TypeError(
+                        f"Expected dict in list, got {type(item).__name__}."
+                    )
+                item_err = item.get("err_out", None)
+                if item_err is not None and err_out is not None:
+                    if not np.array_equal(item_err, err_out):
+                        raise ValueError(
+                            "Not all dada results share the same err_out."
+                        )
+                item_trans = item.get("trans", None)
+                if item_trans is not None:
+                    if trans is None:
+                        trans = item_trans.copy().astype(np.float64)
+                    else:
+                        trans = trans + item_trans.astype(np.float64)
+        else:
+            raise TypeError(
+                f"Expected list of dicts, got list of {type(first).__name__}."
+            )
+    else:
+        raise TypeError(
+            f"Cannot extract errors from object of type "
+            f"{type(obj).__name__}."
+        )
+
+    if err_out is None:
+        raise ValueError("Could not extract error matrix from input.")
+
+    err_out = np.asarray(err_out, dtype=np.float64)
+
+    if enforce:
+        if err_out.ndim != 2 or err_out.shape[0] != 16:
+            raise ValueError(
+                f"Error matrix must have 16 rows, got shape {err_out.shape}."
+            )
+        if not np.issubdtype(err_out.dtype, np.number):
+            raise ValueError("Error matrix must be numeric.")
+        if np.any(err_out < 0.0) or np.any(err_out > 1.0):
+            raise ValueError(
+                "Error matrix values must be in [0, 1]."
+            )
+
+    if detailed:
+        return {
+            "err_out": err_out,
+            "err_in": np.asarray(err_in, dtype=np.float64) if err_in is not None else None,
+            "trans": np.asarray(trans, dtype=np.float64) if trans is not None else None,
+        }
+    return err_out
+
+
+# ---------------------------------------------------------------------------
+# merge_sequence_tables -- merge multiple sequence tables
+# ---------------------------------------------------------------------------
+
+def merge_sequence_tables(
+    *tables,
+    order_by: str = "abundance",
+    try_rc: bool = False,
+):
+    """Merge multiple sequence tables into one.
+
+    Mirrors R's ``mergeSequenceTables``.
+
+    Each table is a dict with:
+        - ``'table'``: numpy array (nsamples x nseqs)
+        - ``'seqs'``: list of sequence strings
+
+    Sequences present in multiple tables have their counts summed.
+    If ``try_rc`` is True, reverse-complement sequences are detected
+    and re-oriented to match the majority orientation.
+
+    Args:
+        *tables: Variable number of sequence table dicts.
+        order_by: Column ordering: ``"abundance"`` (total counts, descending)
+            or ``"nsamples"`` (number of samples present, descending).
+        try_rc: If True, check for reverse-complement sequences across
+            tables and re-orient them before merging.
+
+    Returns:
+        A dict with ``'table'`` (numpy array) and ``'seqs'`` (list of str).
+    """
+    if len(tables) == 0:
+        raise ValueError("No tables provided to merge.")
+
+    if len(tables) == 1:
+        return tables[0]
+
+    # Collect all unique sequences and their sample counts
+    # Each table contributes rows (samples) with counts for its sequences
+    all_seqs_set: Dict[str, int] = {}  # seq -> index in merged
+    sample_rows: List[np.ndarray] = []  # list of arrays, one per sample
+    seq_lists: List[List[str]] = []
+
+    # If try_rc, build a mapping of RC sequences
+    rc_map: Dict[str, str] = {}  # maps RC form -> canonical form
+
+    # First pass: gather all sequences
+    all_seqs_ordered: List[str] = []
+    for tbl in tables:
+        tseqs = tbl["seqs"]
+        for seq in tseqs:
+            canon = seq
+            if try_rc and seq not in all_seqs_set:
+                seq_rc = _rc(seq)
+                if seq_rc in all_seqs_set:
+                    # This sequence's RC is already known; map it
+                    rc_map[seq] = seq_rc
+                    canon = seq_rc
+            if canon not in all_seqs_set:
+                all_seqs_set[canon] = len(all_seqs_ordered)
+                all_seqs_ordered.append(canon)
+
+    n_seqs = len(all_seqs_ordered)
+    seq_index = {s: i for i, s in enumerate(all_seqs_ordered)}
+
+    # Second pass: build merged count matrix
+    all_sample_counts: List[np.ndarray] = []
+
+    for tbl in tables:
+        tseqs = tbl["seqs"]
+        tmat = np.asarray(tbl["table"])
+        if tmat.ndim == 1:
+            tmat = tmat.reshape(1, -1)
+        nsamples = tmat.shape[0]
+
+        for si in range(nsamples):
+            row = np.zeros(n_seqs, dtype=np.int64)
+            for ji, seq in enumerate(tseqs):
+                canon = rc_map.get(seq, seq)
+                idx = seq_index[canon]
+                row[idx] += tmat[si, ji]
+            all_sample_counts.append(row)
+
+    merged_mat = np.vstack(all_sample_counts)
+
+    # Order columns
+    if order_by == "abundance":
+        col_totals = merged_mat.sum(axis=0)
+        order = np.argsort(-col_totals)
+    elif order_by == "nsamples":
+        n_present = (merged_mat > 0).sum(axis=0)
+        order = np.argsort(-n_present)
+    else:
+        order = np.arange(n_seqs)
+
+    merged_mat = merged_mat[:, order]
+    merged_seqs = [all_seqs_ordered[i] for i in order]
+
+    return {"table": merged_mat, "seqs": merged_seqs}
+
+
+# ---------------------------------------------------------------------------
+# nwhamming -- Hamming distance via NW alignment
+# ---------------------------------------------------------------------------
+
+def nwhamming(s1, s2, **kwargs):
+    """Compute Hamming distance between sequences via NW alignment.
+
+    Aligns the two sequences using ``nwalign`` and then counts mismatches
+    and indels using ``eval_pair``.
+
+    Vectorized: if *s1* and *s2* are both lists (of the same length),
+    returns a list of distances.
+
+    Args:
+        s1: DNA sequence string, or list of strings.
+        s2: DNA sequence string, or list of strings.
+        **kwargs: Additional keyword arguments passed to ``nwalign``
+            (e.g. ``match``, ``mismatch``, ``gap_p``, ``band``).
+
+    Returns:
+        int (scalar inputs) or list of int (list inputs): mismatch + indel
+        count for each pair.
+    """
+    from ._cdada import nwalign as _nwalign, eval_pair as _eval_pair
+
+    is_list = isinstance(s1, (list, tuple))
+    if is_list:
+        if not isinstance(s2, (list, tuple)) or len(s1) != len(s2):
+            raise ValueError(
+                "s1 and s2 must be lists of the same length for vectorized nwhamming."
+            )
+        results = []
+        for a, b in zip(s1, s2):
+            al1, al2 = _nwalign(a, b, **kwargs)
+            nmatch, nmismatch, nindel = _eval_pair(al1, al2)
+            results.append(nmismatch + nindel)
+        return results
+
+    al1, al2 = _nwalign(s1, s2, **kwargs)
+    nmatch, nmismatch, nindel = _eval_pair(al1, al2)
+    return nmismatch + nindel
+
+
+# ---------------------------------------------------------------------------
+# is_shift_denovo -- detect shifted sequences
+# ---------------------------------------------------------------------------
+
+def is_shift_denovo(
+    unqs,
+    min_overlap: int = 20,
+    verbose: bool = False,
+) -> np.ndarray:
+    """Check if sequences are shifted versions of more-abundant sequences.
+
+    For each sequence (sorted by decreasing abundance), check whether it
+    is a "shift" of any more-abundant sequence.  A shifted pair has:
+
+    - ``match < len(sq1)`` AND ``match < len(sq2)``
+    - ``match >= min_overlap``
+    - ``mismatch == 0`` AND ``indel == 0``
+
+    This identifies reads that are identical subsequences but offset
+    (shifted) relative to each other.
+
+    Args:
+        unqs: dict ``{sequence: abundance}`` (as from ``get_uniques``),
+            or a list of sequences sorted by decreasing abundance.
+        min_overlap: Minimum overlap (match) length to call a shift.
+        verbose: If True, log details about detected shifts.
+
+    Returns:
+        Boolean numpy array, True where a sequence is a shifted duplicate
+        of a more-abundant sequence.
+    """
+    from ._cdada import nwalign as _nwalign, eval_pair as _eval_pair
+
+    if isinstance(unqs, dict):
+        # Sort by decreasing abundance
+        sorted_items = sorted(unqs.items(), key=lambda x: x[1], reverse=True)
+        seqs = [item[0] for item in sorted_items]
+    elif isinstance(unqs, (list, tuple)):
+        seqs = list(unqs)
+    else:
+        seqs = list(unqs)
+
+    n = len(seqs)
+    is_shift = np.zeros(n, dtype=bool)
+
+    for i in range(1, n):
+        sq_i = seqs[i]
+        len_i = len(sq_i)
+        for j in range(i):
+            if is_shift[j]:
+                continue
+            sq_j = seqs[j]
+            len_j = len(sq_j)
+
+            al1, al2 = _nwalign(sq_j, sq_i)
+            nmatch, nmismatch, nindel = _eval_pair(al1, al2)
+
+            if (nmatch < len_j and nmatch < len_i
+                    and nmatch >= min_overlap
+                    and nmismatch == 0 and nindel == 0):
+                is_shift[i] = True
+                if verbose:
+                    logger.info(
+                        "[INFO] is_shift_denovo: seq %d is a shift of seq %d "
+                        "(overlap=%d)", i, j, nmatch
+                    )
+                break
+
+    return is_shift
+
+
+# ---------------------------------------------------------------------------
+# plot_errors -- error rate diagnostic plot
+# ---------------------------------------------------------------------------
+
+def plot_errors(
+    dq,
+    nti: Tuple[str, ...] = ("A", "C", "G", "T"),
+    ntj: Tuple[str, ...] = ("A", "C", "G", "T"),
+    obs: bool = True,
+    err_out: bool = True,
+    err_in: bool = False,
+    nominal_q: bool = False,
+    output: Optional[str] = None,
+):
+    """Error rate diagnostic plot using plotly.
+
+    Mirrors R's ``plotErrors``.
+
+    Creates a faceted plot showing error rates for each nucleotide
+    transition (from_nuc -> to_nuc).  Self-transitions are blanked out.
+
+    Args:
+        dq: A dada result dict (with ``err_out``, optionally ``err_in``
+            and ``trans``), or a numpy error matrix (16, ncol).
+        nti: Tuple of source nucleotides to include.
+        ntj: Tuple of target nucleotides to include.
+        obs: If True, show observed error rates as scatter points.
+        err_out: If True, show the estimated (output) error rates as a line.
+        err_in: If True, show the input error rates as a dashed line.
+        nominal_q: If True, show nominal Q-score error rates as a red line.
+        output: If given, save to this path (.html for interactive,
+            .png/.svg/.pdf require kaleido).  If None, returns the
+            plotly Figure object.
+
+    Returns:
+        plotly.graph_objects.Figure if output is None, else None.
+    """
+    try:
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+    except ImportError:
+        raise ImportError("plotly is required for plot_errors: pip install plotly")
+
+    nt_map = {"A": 0, "C": 1, "G": 2, "T": 3}
+
+    # Extract error info
+    err_info = get_errors(dq, detailed=True, enforce=False)
+    err_out_mat = err_info["err_out"]
+    err_in_mat = err_info.get("err_in", None) if err_in else None
+    trans_mat = err_info.get("trans", None) if obs else None
+
+    ncol = err_out_mat.shape[1]
+    qq = np.arange(ncol)
+
+    nti_indices = [nt_map[nt] for nt in nti]
+    ntj_indices = [nt_map[nt] for nt in ntj]
+
+    n_rows = len(nti_indices)
+    n_cols = len(ntj_indices)
+
+    subplot_titles = []
+    for ni in nti:
+        for nj in ntj:
+            subplot_titles.append(f"{ni} -> {nj}" if ni != nj else "")
+
+    fig = make_subplots(
+        rows=n_rows, cols=n_cols,
+        subplot_titles=subplot_titles,
+        shared_xaxes=True, shared_yaxes=True,
+        horizontal_spacing=0.03, vertical_spacing=0.05,
+    )
+
+    for ri, ni_idx in enumerate(nti_indices):
+        for ci, nj_idx in enumerate(ntj_indices):
+            row_plot = ri + 1
+            col_plot = ci + 1
+            row_idx = ni_idx * 4 + nj_idx
+
+            if ni_idx == nj_idx:
+                # Self-transition: blank
+                continue
+
+            show_legend = (ri == 0 and ci == 1)
+
+            # Observed error rates (scatter)
+            if obs and trans_mat is not None:
+                from .error import _BASE_ROWS
+                base_rows = _BASE_ROWS[ni_idx]
+                tot = trans_mat[base_rows].sum(axis=0).astype(np.float64)
+                errs = trans_mat[row_idx].astype(np.float64)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    obs_rate = errs / tot
+                obs_rate[~np.isfinite(obs_rate)] = np.nan
+
+                # Point sizes proportional to sqrt(total counts)
+                sizes = np.sqrt(np.maximum(tot, 0)) / np.sqrt(np.nanmax(tot) + 1) * 12 + 2
+
+                fig.add_trace(
+                    go.Scatter(
+                        x=qq, y=obs_rate,
+                        mode="markers",
+                        marker=dict(
+                            size=sizes,
+                            color="rgba(0, 0, 0, 0.4)",
+                        ),
+                        name="Observed",
+                        showlegend=show_legend,
+                        legendgroup="obs",
+                    ),
+                    row=row_plot, col=col_plot,
+                )
+
+            # Estimated error rates (line)
+            if err_out:
+                fig.add_trace(
+                    go.Scatter(
+                        x=qq, y=err_out_mat[row_idx],
+                        mode="lines",
+                        line=dict(color="#1f77b4", width=2),
+                        name="Estimated",
+                        showlegend=show_legend,
+                        legendgroup="est",
+                    ),
+                    row=row_plot, col=col_plot,
+                )
+
+            # Input error rates (dashed line)
+            if err_in and err_in_mat is not None:
+                fig.add_trace(
+                    go.Scatter(
+                        x=qq, y=err_in_mat[row_idx],
+                        mode="lines",
+                        line=dict(color="#ff7f0e", width=1.5, dash="dash"),
+                        name="Input",
+                        showlegend=show_legend,
+                        legendgroup="in",
+                    ),
+                    row=row_plot, col=col_plot,
+                )
+
+            # Nominal Q-score error rates (red line)
+            if nominal_q:
+                nominal_rates = 10.0 ** (-qq / 10.0)
+                fig.add_trace(
+                    go.Scatter(
+                        x=qq, y=nominal_rates,
+                        mode="lines",
+                        line=dict(color="red", width=1, dash="dot"),
+                        name="Nominal Q",
+                        showlegend=show_legend,
+                        legendgroup="nom",
+                    ),
+                    row=row_plot, col=col_plot,
+                )
+
+            # Log scale for y-axis
+            fig.update_yaxes(type="log", row=row_plot, col=col_plot)
+
+    fig.update_layout(
+        title="Error rates by nucleotide transition",
+        height=200 * n_rows + 100,
+        width=200 * n_cols + 100,
+    )
+    fig.update_xaxes(title_text="Quality Score")
+    fig.update_yaxes(title_text="Error Rate")
+
+    if output:
+        if output.endswith(".html"):
+            fig.write_html(output)
+        else:
+            fig.write_image(output)
+        return None
+
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# plot_complexity -- sequence complexity histogram
+# ---------------------------------------------------------------------------
+
+def plot_complexity(
+    files: Union[str, List[str]],
+    kmer_size: int = 2,
+    n: int = 100000,
+    bins: int = 100,
+    output: Optional[str] = None,
+):
+    """Sequence complexity histogram using plotly.
+
+    Samples *n* reads from each FASTQ file, computes sequence complexity
+    (Shannon effective number of kmers), and plots a faceted histogram.
+
+    Args:
+        files: One or more FASTQ file paths (may be gzipped).
+        kmer_size: Kmer size for complexity calculation (default 2).
+        n: Maximum number of reads to sample per file.
+        bins: Number of histogram bins.
+        output: If given, save to this path (.html for interactive,
+            .png/.svg/.pdf require kaleido).  If None, returns the
+            plotly Figure object.
+
+    Returns:
+        plotly.graph_objects.Figure if output is None, else None.
+    """
+    try:
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+    except ImportError:
+        raise ImportError("plotly is required for plot_complexity: pip install plotly")
+
+    if isinstance(files, str):
+        files = [files]
+
+    n_files = len(files)
+    fig = make_subplots(
+        rows=n_files, cols=1,
+        subplot_titles=[os.path.basename(f) for f in files],
+        shared_xaxes=True,
+        vertical_spacing=0.05 if n_files > 1 else 0.0,
+    )
+
+    for fi, fpath in enumerate(files):
+        # Read sequences from FASTQ
+        seqs_read: List[str] = []
+        opener = gzip.open if fpath.endswith(".gz") else open
+        count = 0
+        with opener(fpath, "rt") as fh:
+            while count < n:
+                header = fh.readline()
+                if not header:
+                    break
+                seq = fh.readline().rstrip("\n\r")
+                plus = fh.readline()
+                qual = fh.readline()
+                if not seq:
+                    break
+                seqs_read.append(seq)
+                count += 1
+
+        # Compute complexity
+        complexities = seq_complexity(seqs_read, kmer_size=kmer_size)
+
+        fig.add_trace(
+            go.Histogram(
+                x=complexities,
+                nbinsx=bins,
+                name=os.path.basename(fpath),
+                showlegend=True,
+            ),
+            row=fi + 1, col=1,
+        )
+
+    fig.update_layout(
+        title="Sequence Complexity",
+        height=300 * n_files + 100,
+        width=700,
+    )
+    fig.update_xaxes(title_text="Complexity (Shannon effective kmers)")
+    fig.update_yaxes(title_text="Count")
+
+    if output:
+        if output.endswith(".html"):
+            fig.write_html(output)
+        else:
+            fig.write_image(output)
+        return None
+
+    return fig
+
+
+# ---------------------------------------------------------------------------
+# remove_primers -- match and trim primer sequences from reads
+# ---------------------------------------------------------------------------
+
+def _hamming_match(seq_region: str, primer: str, max_mismatch: int) -> bool:
+    """Check if seq_region matches primer with at most max_mismatch mismatches.
+
+    Both strings must be the same length.
+    """
+    if len(seq_region) != len(primer):
+        return False
+    mismatches = 0
+    for a, b in zip(seq_region, primer):
+        if a != b:
+            mismatches += 1
+            if mismatches > max_mismatch:
+                return False
+    return True
+
+
+def remove_primers(
+    fn: str,
+    fout: str,
+    primer_fwd: str,
+    primer_rev: Optional[str] = None,
+    max_mismatch: int = 2,
+    trim_fwd: bool = True,
+    trim_rev: bool = True,
+    orient: bool = True,
+    compress: bool = True,
+    verbose: bool = False,
+) -> Tuple[int, int]:
+    """Match and trim primer sequences from FASTQ reads.
+
+    Reads the input FASTQ file, matches the forward primer at the start
+    of each read and the reverse-complement of the reverse primer at
+    the end.  Reads that match are trimmed (if ``trim_fwd`` / ``trim_rev``)
+    and written to the output file.
+
+    If ``orient=True``, reads that don't match in forward orientation
+    are checked in reverse-complement and flipped if they match.
+
+    Args:
+        fn: Input FASTQ file path (may be gzipped).
+        fout: Output FASTQ file path.
+        primer_fwd: Forward primer sequence (5' to 3').
+        primer_rev: Reverse primer sequence (5' to 3'), optional.
+            Its reverse complement is matched at the 3' end of reads.
+        max_mismatch: Maximum allowed mismatches per primer match.
+        trim_fwd: If True, trim the matched forward primer region.
+        trim_rev: If True, trim the matched reverse primer region.
+        orient: If True, check reverse complement of reads and flip
+            if primers match in that orientation.
+        compress: If True and output path ends with ``.gz``, gzip-compress
+            the output.
+        verbose: If True, log progress and match statistics.
+
+    Returns:
+        Tuple ``(reads_in, reads_out)`` with the number of reads read
+        and the number of reads written.
+    """
+    primer_fwd = primer_fwd.upper()
+    len_fwd = len(primer_fwd)
+
+    if primer_rev is not None:
+        primer_rev = primer_rev.upper()
+        primer_rev_rc = _rc(primer_rev)
+        len_rev_rc = len(primer_rev_rc)
+    else:
+        primer_rev_rc = None
+        len_rev_rc = 0
+
+    reads_in = 0
+    reads_out = 0
+
+    opener_in = gzip.open if fn.endswith(".gz") else open
+    if compress and fout.endswith(".gz"):
+        opener_out = gzip.open
+        mode_out = "wt"
+    else:
+        opener_out = open
+        mode_out = "w"
+
+    with opener_in(fn, "rt") as fh_in, opener_out(fout, mode_out) as fh_out:
+        while True:
+            header = fh_in.readline()
+            if not header:
+                break
+            seq = fh_in.readline().rstrip("\n\r")
+            plus = fh_in.readline()
+            qual = fh_in.readline().rstrip("\n\r")
+            if not seq:
+                break
+
+            reads_in += 1
+            seq_upper = seq.upper()
+            matched = False
+            is_rc = False
+
+            # Try forward orientation
+            fwd_ok = False
+            rev_ok = False
+
+            if len(seq_upper) >= len_fwd:
+                fwd_ok = _hamming_match(seq_upper[:len_fwd], primer_fwd, max_mismatch)
+
+            if primer_rev_rc is not None and len(seq_upper) >= len_rev_rc:
+                rev_ok = _hamming_match(
+                    seq_upper[len(seq_upper) - len_rev_rc:],
+                    primer_rev_rc, max_mismatch,
+                )
+            elif primer_rev_rc is None:
+                rev_ok = True  # No reverse primer to check
+
+            if fwd_ok and rev_ok:
+                matched = True
+            elif orient and not matched:
+                # Try reverse complement
+                seq_rc = _rc(seq_upper)
+                qual_rc = qual[::-1]
+
+                fwd_ok_rc = False
+                rev_ok_rc = False
+
+                if len(seq_rc) >= len_fwd:
+                    fwd_ok_rc = _hamming_match(seq_rc[:len_fwd], primer_fwd, max_mismatch)
+
+                if primer_rev_rc is not None and len(seq_rc) >= len_rev_rc:
+                    rev_ok_rc = _hamming_match(
+                        seq_rc[len(seq_rc) - len_rev_rc:],
+                        primer_rev_rc, max_mismatch,
+                    )
+                elif primer_rev_rc is None:
+                    rev_ok_rc = True
+
+                if fwd_ok_rc and rev_ok_rc:
+                    matched = True
+                    is_rc = True
+                    seq = seq_rc
+                    qual = qual_rc
+
+            if not matched:
+                continue
+
+            # Trim primers
+            start = len_fwd if (trim_fwd and fwd_ok) or (trim_fwd and is_rc and fwd_ok_rc) else 0
+            end = len(seq) - len_rev_rc if (trim_rev and primer_rev_rc is not None) else len(seq)
+            if end <= start:
+                continue
+
+            seq_out = seq[start:end]
+            qual_out = qual[start:end]
+
+            fh_out.write(header)
+            fh_out.write(seq_out + "\n")
+            fh_out.write("+\n")
+            fh_out.write(qual_out + "\n")
+            reads_out += 1
+
+    if verbose:
+        logger.info(
+            "[INFO] remove_primers: %d reads in, %d reads out (%.1f%% matched).",
+            reads_in, reads_out,
+            100.0 * reads_out / reads_in if reads_in > 0 else 0.0,
+        )
+
+    return reads_in, reads_out

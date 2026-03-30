@@ -335,3 +335,151 @@ def get_initial_err(ncol=41):
     """Get a maximum-possible initial error matrix (all 1.0, matching R)."""
     err = np.full((16, ncol), 1.0)
     return err
+
+
+def pacbio_errfun(trans):
+    """PacBio-specific error function.
+
+    Mirrors R's PacBioErrfun from errorModels.R.
+
+    Quality score 93 (the last column, if present) is handled separately
+    using a simple MLE with pseudocount: ``(count + 1) / (total + 4)``.
+    All other quality scores are fit using ``loess_errfun``.
+
+    If Q93 is not present (i.e. the transition matrix does not extend to
+    quality 93), the function falls back entirely to ``loess_errfun``.
+
+    Args:
+        trans: numpy array (16, ncol), transition counts.
+
+    Returns:
+        numpy array (16, ncol), estimated error rates.
+    """
+    ncol = trans.shape[1]
+    # Q93 is present if the matrix extends to column index 93
+    # (columns are 0-indexed quality scores)
+    has_q93 = ncol > 93
+
+    if not has_q93:
+        return loess_errfun(trans)
+
+    # Separate Q93 column (last meaningful column at index 93)
+    q93_col = 93
+    trans_no93 = np.delete(trans, q93_col, axis=1)
+
+    # Fit non-Q93 columns with loess
+    err = loess_errfun(trans_no93)
+
+    # Re-insert Q93 column
+    err_full = np.insert(err, q93_col, 0.0, axis=1)
+
+    # Compute Q93 error rates with MLE + pseudocount
+    for nti in range(4):
+        base_rows = _BASE_ROWS[nti]
+        tot = sum(trans[row, q93_col] for row in base_rows)
+        for ntj in range(4):
+            row = nti * 4 + ntj
+            if nti == ntj:
+                continue
+            count = trans[row, q93_col]
+            err_full[row, q93_col] = (count + 1.0) / (tot + 4.0)
+        # Self-transition: 1 - sum(off-diagonal)
+        off_diag_sum = sum(
+            err_full[nti * 4 + ntj, q93_col]
+            for ntj in range(4) if ntj != nti
+        )
+        err_full[nti * 4 + nti, q93_col] = 1.0 - off_diag_sum
+
+    # Trim to original ncol if the loess result had fewer columns
+    if err_full.shape[1] > ncol:
+        err_full = err_full[:, :ncol]
+
+    return err_full
+
+
+def make_binned_qual_errfun(binned_q):
+    """Return an error function that uses piecewise linear interpolation.
+
+    Mirrors R's ``dada2:::make.binned.qual.errfun``.
+
+    Args:
+        binned_q: array-like of quality score bin boundaries (sorted,
+            ascending).  These are the quality score values at which
+            the error rates are "known" (from the transition matrix
+            columns).  Between bins, error rates are linearly interpolated.
+
+    Returns:
+        A callable ``errfun(trans)`` that accepts a 16-row transition
+        matrix and returns a 16-row error rate matrix, using piecewise
+        linear interpolation between the binned quality scores.
+    """
+    binned_q = np.asarray(binned_q, dtype=np.float64)
+
+    # Off-diagonal row indices in the standard 12-element order:
+    # A2C, A2G, A2T, C2A, C2G, C2T, G2A, G2C, G2T, T2A, T2C, T2G
+    off_diag_order = [
+        (0, 1), (0, 2), (0, 3),  # A2C, A2G, A2T
+        (1, 0), (1, 2), (1, 3),  # C2A, C2G, C2T
+        (2, 0), (2, 1), (2, 3),  # G2A, G2C, G2T
+        (3, 0), (3, 1), (3, 2),  # T2A, T2C, T2G
+    ]
+
+    MIN_ERROR_RATE = 1e-7
+    MAX_ERROR_RATE = 0.25
+
+    def errfun(trans):
+        """Binned quality error function with piecewise linear interpolation.
+
+        Args:
+            trans: numpy array (16, ncol), transition counts.
+
+        Returns:
+            numpy array (16, ncol), estimated error rates.
+        """
+        ncol = trans.shape[1]
+        qq = np.arange(ncol, dtype=np.float64)
+        err = np.zeros((16, ncol), dtype=np.float64)
+
+        # Compute observed error rates at each quality score
+        for nti, ntj in off_diag_order:
+            row = nti * 4 + ntj
+            base_rows = _BASE_ROWS[nti]
+            tot = trans[base_rows].sum(axis=0).astype(np.float64)
+            errs = trans[row].astype(np.float64)
+
+            with np.errstate(divide="ignore", invalid="ignore"):
+                obs_rate = errs / tot
+            obs_rate[~np.isfinite(obs_rate)] = 0.0
+
+            # Get rates at the binned quality positions
+            bin_indices = []
+            bin_rates = []
+            for bq in binned_q:
+                idx = int(round(bq))
+                if 0 <= idx < ncol:
+                    bin_indices.append(idx)
+                    bin_rates.append(obs_rate[idx])
+
+            if len(bin_indices) < 2:
+                # Not enough bins — use flat observed rate
+                err[row, :] = np.clip(obs_rate, MIN_ERROR_RATE, MAX_ERROR_RATE)
+                continue
+
+            bin_indices = np.array(bin_indices, dtype=np.float64)
+            bin_rates = np.array(bin_rates, dtype=np.float64)
+
+            # Piecewise linear interpolation across all quality scores
+            interp_rates = np.interp(qq, bin_indices, bin_rates)
+
+            # Clamp
+            err[row, :] = np.clip(interp_rates, MIN_ERROR_RATE, MAX_ERROR_RATE)
+
+        # Self-transitions: 1 - sum(off-diagonal) for each base
+        for nti in range(4):
+            off_diag_rows = [nti * 4 + ntj for ntj in range(4) if ntj != nti]
+            off_sum = sum(err[r, :] for r in off_diag_rows)
+            err[nti * 4 + nti, :] = 1.0 - off_sum
+
+        return err
+
+    return errfun
