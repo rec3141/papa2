@@ -1,0 +1,57 @@
+{% set version = "0.1.0" %}
+
+package:
+  name: papa2
+  version: {{ version }}
+
+source:
+  # Build from local source tree (used with: conda build conda/)
+  path: ..
+
+build:
+  number: 0
+  # Build and install via setup.py so that make runs and libdada2.so is
+  # compiled and placed inside the installed package directory.
+  script: |
+    make libdada2.so
+    {{ PYTHON }} -m pip install . --no-deps --no-build-isolation -vv
+  # Only Linux/macOS are supported; the C++ code requires POSIX.
+  skip: true  # [win]
+
+requirements:
+  build:
+    - {{ compiler('c') }}
+    - {{ compiler('cxx') }}
+    - make
+  host:
+    - python >=3.10
+    - pip
+    - setuptools >=68
+    - wheel
+    - numpy
+    - zlib
+  run:
+    - python >=3.10
+    - numpy
+
+test:
+  imports:
+    - papa2
+  commands:
+    - papa2 --help || true
+
+about:
+  home: https://github.com/rec3141/papa2
+  license: MIT
+  license_file: LICENSE
+  summary: Python-first amplicon denoising derived from the standalone DADA2 port
+  description: |
+    papa2 is a Python amplicon denoising tool that wraps a compiled C/C++
+    shared library (libdada2.so).  It provides a pure-Python interface to the
+    DADA2 denoising algorithm without requiring R.
+  doc_url: https://github.com/rec3141/papa2
+  dev_url: https://github.com/rec3141/papa2
+
+extra:
+  recipe-maintainers:
+    - rec3141

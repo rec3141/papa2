@@ -1,0 +1,22 @@
+# Include the C/C++ source files and build system so that source distributions
+# (sdist) contain everything needed to compile libdada2.so from scratch.
+
+# Build system
+include Makefile
+
+# C/C++ source and headers
+recursive-include src *.c *.cpp *.h
+
+# Compiled shared library (present in the project root after make)
+include libdada2.so
+
+# Standard project files (README, LICENSE, etc. are included automatically by
+# setuptools, but listing them explicitly keeps the manifest self-documenting)
+include README.md
+include LICENSE
+
+# Exclude compiled objects and caches
+global-exclude *.o
+global-exclude *.pyc
+global-exclude __pycache__
+global-exclude .DS_Store

@@ -12,9 +12,44 @@ license = { file = "LICENSE" }
 authors = [
   { name = "R. Eric Collins" }
 ]
+keywords = ["bioinformatics", "amplicon", "denoising", "dada2", "metagenomics", "microbiome"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "Topic :: Scientific/Engineering",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: C++",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+]
 dependencies = [
   "numpy"
 ]
 
+[project.urls]
+Homepage = "https://github.com/rec3141/papa2"
+Repository = "https://github.com/rec3141/papa2"
+"Bug Tracker" = "https://github.com/rec3141/papa2/issues"
+
+[project.optional-dependencies]
+docs = [
+  "mkdocs-material",
+  "mkdocstrings[python]",
+]
+test = [
+  "pytest",
+]
+
+[project.scripts]
+papa2 = "papa2.cli:main"
+
 [tool.setuptools]
 packages = ["papa2"]
+
+[tool.setuptools.package-data]
+papa2 = ["*.so"]

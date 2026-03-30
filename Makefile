@@ -23,7 +23,7 @@ SRCS = src/dada2_capi.cpp \
 OBJS = $(SRCS:.cpp=.o)
 LDFLAGS = -lm
 
-.PHONY: all clean
+.PHONY: all clean docs
 
 all: libdada2.so
 
@@ -40,6 +40,10 @@ src/%.o: src/%.cpp
 
 clean:
 	rm -f src/*.o libdada2.so
+
+# Build documentation with mkdocs-material
+docs:
+	mkdocs build
 
 # Print config
 info:
