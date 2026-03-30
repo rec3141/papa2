@@ -217,7 +217,7 @@ def dada(derep, err=None, error_estimation_function=None, self_consist=False,
                 sys.stdout.write("." * len(derep))
                 sys.stdout.flush()
         else:
-            # Sequential: GPU mode or single sample
+            # Sequential path for single-sample or single-worker execution.
             results = []
             for drp in derep:
                 if verbose and self_consist:

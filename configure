@@ -8,5 +8,5 @@ PKG_LIBS += $(shell ${R_HOME}/bin/Rscript -e "RcppParallel::RcppParallelLibs()")
 CXX_STD = CXX11
 MAKEVARS_EOF
 
-echo "  GPU support disabled on this branch."
+echo "  CPU-only standalone build."
 echo "* done."
