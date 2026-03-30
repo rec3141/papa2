@@ -28,7 +28,8 @@ FROM python:3.12-slim AS runtime
 # Runtime zlib — libpapa2.so links against libz at dlopen time
 RUN apt-get update -qq && \
     apt-get install -y --no-install-recommends \
-        zlib1g && \
+        zlib1g \
+        libgomp1 && \
     rm -rf /var/lib/apt/lists/*
 
 # Install numpy (required by papa2 at import time)
