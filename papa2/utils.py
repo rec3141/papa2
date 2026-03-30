@@ -287,19 +287,36 @@ def assign_species(
     n = len(seqs)
     result = np.full((n, 2), None, dtype=object)
 
+    # Build a kmer index over reference sequences for fast candidate lookup.
+    # Instead of checking every query against every ref (O(n*m)), we only
+    # verify substring containment for refs that share a kmer with the query.
+    _KMER_SIZE = 8
+    kmer_index: Dict[str, List[int]] = {}
+    for j, rseq in enumerate(ref_seqs):
+        rseq_upper = rseq.upper()
+        for pos in range(0, len(rseq_upper) - _KMER_SIZE + 1, _KMER_SIZE):
+            kmer = rseq_upper[pos:pos + _KMER_SIZE]
+            if kmer not in kmer_index:
+                kmer_index[kmer] = []
+            kmer_index[kmer].append(j)
+
+    def _find_hits(query_up):
+        """Find ref indices containing query_up as a substring, using kmer pre-filter."""
+        candidates: set = set()
+        for pos in range(len(query_up) - _KMER_SIZE + 1):
+            kmer = query_up[pos:pos + _KMER_SIZE]
+            if kmer in kmer_index:
+                candidates.update(kmer_index[kmer])
+        # Verify actual substring containment on candidates only
+        return [j for j in candidates if query_up in ref_seqs[j].upper()]
+
     for i, query in enumerate(seqs):
         query_up = query.upper()
-        # Find all reference sequences that contain the query as a substring
-        hit_indices = []
-        for j, rseq in enumerate(ref_seqs):
-            if query_up in rseq:
-                hit_indices.append(j)
+        hit_indices = _find_hits(query_up)
         # Also check reverse complement
         if try_rc and not hit_indices:
             query_rc = _rc(query_up)
-            for j, rseq in enumerate(ref_seqs):
-                if query_rc in rseq:
-                    hit_indices.append(j)
+            hit_indices = _find_hits(query_rc)
 
         if not hit_indices:
             continue
@@ -464,11 +481,22 @@ def collapse_no_mismatch(seqtab) -> dict:
     for query in sorted_seqs:
         added = False
         q_upper = query.upper()
-        for ref in representatives:
+        for idx, ref in enumerate(representatives):
             r_upper = ref.upper()
-            # Check if one is a substring of the other (no-mismatch collapse)
-            if q_upper in r_upper or r_upper in q_upper:
+            if q_upper in r_upper:
+                # query is a subsequence of ref — merge under ref (longer)
                 merge_map[query] = ref
+                added = True
+                break
+            elif r_upper in q_upper:
+                # ref is a subsequence of query — query is longer, so it
+                # becomes the new representative and ref merges into it
+                merge_map[query] = query
+                # Re-point everything that was merged into ref → query
+                for k, v in merge_map.items():
+                    if v == ref:
+                        merge_map[k] = query
+                representatives[idx] = query
                 added = True
                 break
         if not added:

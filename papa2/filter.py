@@ -353,15 +353,25 @@ def fastq_paired_filter(
         if d:
             os.makedirs(d, exist_ok=True)
 
+    _sentinel = object()
+
     with (
         _open_fq(fwd) as fin_f,
         _open_fq(rev) as fin_r,
         _write_opener(filt_fwd, compress) as fout_f,
         _write_opener(filt_rev, compress) as fout_r,
     ):
-        for (hdr_f, seq_f, sep_f, qual_f), (hdr_r, seq_r, sep_r, qual_r) in zip(
-            _fastq_records(fin_f), _fastq_records(fin_r)
+        from itertools import zip_longest
+        for rec_f, rec_r in zip_longest(
+            _fastq_records(fin_f), _fastq_records(fin_r), fillvalue=_sentinel
         ):
+            if rec_f is _sentinel or rec_r is _sentinel:
+                raise ValueError(
+                    f"Forward and reverse FASTQ files have different numbers "
+                    f"of reads ({fwd}, {rev}). Files must be synchronized."
+                )
+            hdr_f, seq_f, sep_f, qual_f = rec_f
+            hdr_r, seq_r, sep_r, qual_r = rec_r
             reads_in += 1
 
             seqs = [seq_f, seq_r]
@@ -476,6 +486,22 @@ def fastq_paired_filter(
         )
 
     return reads_in, reads_out
+
+
+# ---------------------------------------------------------------------------
+# Module-level task runners (picklable for ProcessPoolExecutor)
+# ---------------------------------------------------------------------------
+
+def _run_paired_task(args):
+    """Run fastq_paired_filter on a single file pair (picklable)."""
+    fwd, filt_fwd, rev, filt_rev, kw = args
+    return fastq_paired_filter(fwd, filt_fwd, rev, filt_rev, **kw)
+
+
+def _run_single_task(args):
+    """Run fastq_filter on a single file (picklable)."""
+    fwd, filt, kw = args
+    return fastq_filter(fwd, filt, **kw)
 
 
 # ---------------------------------------------------------------------------
@@ -599,47 +625,45 @@ def filter_and_trim(
 
     results = np.zeros((n_files, 2), dtype=np.int64)
 
+    # Build per-file argument tuples (picklable for ProcessPoolExecutor)
     if paired:
-
-        def _run_paired(idx):
-            return fastq_paired_filter(
-                fwd[idx], filt[idx], rev[idx], filt_rev[idx], **common_kw
-            )
-
-        if n_workers > 1 and n_files > 1:
-            with ProcessPoolExecutor(max_workers=n_workers) as pool:
-                futures = {pool.submit(_run_paired, i): i for i in range(n_files)}
-                for fut in futures:
-                    i = futures[fut]
-                    results[i] = fut.result()
-        else:
-            for i in range(n_files):
-                results[i] = _run_paired(i)
-
+        tasks = [
+            (fwd[i], filt[i], rev[i], filt_rev[i], common_kw)
+            for i in range(n_files)
+        ]
     else:
+        # Normalise tuple params to scalars for single-end
+        se_kw = dict(common_kw)
+        for key in (
+            "trim_left", "trim_right", "trunc_len", "trunc_q",
+            "max_len", "min_len", "max_n", "min_q", "max_ee",
+            "rm_lowcomplex",
+        ):
+            v = se_kw[key]
+            if isinstance(v, (list, tuple)):
+                se_kw[key] = v[0]
+        tasks = [(fwd[i], filt[i], se_kw) for i in range(n_files)]
 
-        def _run_single(idx):
-            # For single-end, normalise scalar params
-            kw = dict(common_kw)
-            # Extract single-end values from any tuple params
-            for key in (
-                "trim_left", "trim_right", "trunc_len", "trunc_q",
-                "max_len", "min_len", "max_n", "min_q", "max_ee",
-                "rm_lowcomplex",
-            ):
-                v = kw[key]
-                if isinstance(v, (list, tuple)):
-                    kw[key] = v[0]
-            return fastq_filter(fwd[idx], filt[idx], **kw)
-
-        if n_workers > 1 and n_files > 1:
-            with ProcessPoolExecutor(max_workers=n_workers) as pool:
-                futures = {pool.submit(_run_single, i): i for i in range(n_files)}
-                for fut in futures:
-                    i = futures[fut]
-                    results[i] = fut.result()
-        else:
-            for i in range(n_files):
-                results[i] = _run_single(i)
+    if n_workers > 1 and n_files > 1:
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            if paired:
+                futures = {
+                    pool.submit(_run_paired_task, t): i
+                    for i, t in enumerate(tasks)
+                }
+            else:
+                futures = {
+                    pool.submit(_run_single_task, t): i
+                    for i, t in enumerate(tasks)
+                }
+            for fut in futures:
+                i = futures[fut]
+                results[i] = fut.result()
+    else:
+        for i, t in enumerate(tasks):
+            if paired:
+                results[i] = _run_paired_task(t)
+            else:
+                results[i] = _run_single_task(t)
 
     return results
