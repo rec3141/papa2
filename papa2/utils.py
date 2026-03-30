@@ -460,10 +460,15 @@ def collapse_no_mismatch(seqtab) -> dict:
     import pandas as pd
 
     is_df = isinstance(seqtab, pd.DataFrame)
+    is_table_dict = (isinstance(seqtab, dict) and "table" in seqtab and "seqs" in seqtab)
 
     if is_df:
         # Column names are sequences; collapse column-wise
         seq_abundances = seqtab.sum(axis=0).to_dict()
+    elif is_table_dict:
+        tbl = seqtab["table"]
+        seqs = seqtab["seqs"]
+        seq_abundances = {s: int(tbl[:, i].sum()) for i, s in enumerate(seqs)}
     else:
         seq_abundances = dict(seqtab)
 
@@ -510,12 +515,27 @@ def collapse_no_mismatch(seqtab) -> dict:
         for seq in seqtab.columns:
             rep = merge_map[seq]
             collapsed[rep] = collapsed[rep] + seqtab[seq].values
-        # Order by total abundance descending
         col_order = collapsed.sum(axis=0).sort_values(ascending=False).index
         collapsed = collapsed[col_order]
         logger.info("[INFO] collapse_no_mismatch: %d output sequences.",
                     len(collapsed.columns))
         return collapsed
+    elif is_table_dict:
+        tbl = seqtab["table"]
+        seqs = seqtab["seqs"]
+        rep_idx = {r: i for i, r in enumerate(representatives)}
+        new_mat = np.zeros((tbl.shape[0], len(representatives)), dtype=tbl.dtype)
+        for j, seq in enumerate(seqs):
+            rep = merge_map[seq]
+            new_mat[:, rep_idx[rep]] += tbl[:, j]
+        col_order = np.argsort(-new_mat.sum(axis=0))
+        logger.info("[INFO] collapse_no_mismatch: %d output sequences.",
+                    len(representatives))
+        return {
+            "table": new_mat[:, col_order],
+            "seqs": [representatives[i] for i in col_order],
+            "sample_names": seqtab.get("sample_names", []),
+        }
     else:
         out: Dict[str, int] = {}
         for seq, ab in seq_abundances.items():
@@ -589,17 +609,25 @@ def make_sequence_table(
         for seq, ab in samples_dict[sample_name].items():
             mat[i, seq_index[seq]] = int(ab)
 
-    df = pd.DataFrame(mat, index=sample_names, columns=seq_list)
-
     # Order columns
     if order_by == "abundance":
-        col_sums = df.sum(axis=0)
-        df = df[col_sums.sort_values(ascending=False).index]
+        col_order = np.argsort(-mat.sum(axis=0))
     elif order_by == "nsamples":
-        n_samples = (df > 0).sum(axis=0)
-        df = df[n_samples.sort_values(ascending=False).index]
+        col_order = np.argsort(-(mat > 0).sum(axis=0))
+    else:
+        col_order = np.arange(len(seq_list))
 
-    return df
+    ordered_seqs = [seq_list[i] for i in col_order]
+    ordered_mat = mat[:, col_order]
+
+    logger.info("[INFO] make_sequence_table: %d samples x %d ASVs.",
+                len(sample_names), len(ordered_seqs))
+
+    return {
+        "table": ordered_mat,
+        "seqs": ordered_seqs,
+        "sample_names": sample_names,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1086,10 +1114,11 @@ def plot_sankey(
 
 def _seqtab_sum(st):
     """Return total read count from a sequence table (array, dict, or DataFrame)."""
-    if hasattr(st, "values"):  # DataFrame
-        return int(st.values.sum())
     if isinstance(st, dict) and "table" in st:
         return int(st["table"].sum())
+    if hasattr(st, "values") and hasattr(st.values, "__call__") is False:
+        # DataFrame — .values is a property returning ndarray
+        return int(st.values.sum())
     if hasattr(st, "sum"):  # numpy array
         return int(st.sum())
     return 0

@@ -27,7 +27,7 @@ for i, dd in enumerate(dadas):
 
 # --- 5. Build sequence table ---
 seqtab = papa2.make_sequence_table(dadas)
-print(f"Sequence table: {seqtab.shape[0]} samples x {seqtab.shape[1]} ASVs")
+print(f"Sequence table: {seqtab['table'].shape[0]} samples x {seqtab['table'].shape[1]} ASVs")
 
 # --- 6. Visualise read tracking (Sankey diagram) ---
 track = papa2.track_reads(dereps=dereps, dadas=dadas, seqtab=seqtab)

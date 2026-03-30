@@ -102,7 +102,7 @@ for name, fwd in zip(sample_names, fwd_files):
 
 # Build the sequence table
 seqtab = papa2.make_sequence_table(dds)
-print(f"Sequence table: {seqtab.shape[0]} samples x {seqtab.shape[1]} ASVs")
+print(f"Sequence table: {seqtab['table'].shape[0]} samples x {seqtab['table'].shape[1]} ASVs")
 ```
 
 ### Paired-end
@@ -122,7 +122,7 @@ for name, fwd, rev in zip(sample_names, fwd_files, rev_files):
 
 # Build the sequence table from the merger results
 seqtab = papa2.make_sequence_table(mergers_dict)
-print(f"Sequence table: {seqtab.shape[0]} samples x {seqtab.shape[1]} ASVs")
+print(f"Sequence table: {seqtab['table'].shape[0]} samples x {seqtab['table'].shape[1]} ASVs")
 ```
 
 !!! tip "Saving intermediate results"
