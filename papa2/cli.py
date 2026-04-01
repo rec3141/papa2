@@ -52,112 +52,6 @@ def _cmd_filter_trim(args):
     print(f"{reads_out}/{reads_in} ({pct}%) passed filter")
 
 
-def _cmd_auto_trim(args):
-    """Analyze quality profiles and recommend truncation lengths."""
-    import gzip
-    import glob
-
-    import numpy as np
-
-    fwd_files = sorted(glob.glob(args.input_dir + "/*_1.fastq.gz") +
-                       glob.glob(args.input_dir + "/*_R1*.fastq.gz"))
-    rev_files = sorted(glob.glob(args.input_dir + "/*_2.fastq.gz") +
-                       glob.glob(args.input_dir + "/*_R2*.fastq.gz"))
-
-    if not fwd_files or not rev_files:
-        print("ERROR: no paired FASTQ files found in " + args.input_dir,
-              file=sys.stderr)
-        sys.exit(1)
-
-    # Sample from a subset of files
-    n_files = min(args.n_files, len(fwd_files))
-    step = max(1, len(fwd_files) // n_files)
-    fwd_sample = fwd_files[::step][:n_files]
-    rev_sample = rev_files[::step][:n_files]
-
-    def _read_quals(files, n_reads):
-        """Read quality scores from FASTQ files, return per-position arrays."""
-        all_quals = []
-        count = 0
-        for fpath in files:
-            opener = gzip.open if fpath.endswith(".gz") else open
-            with opener(fpath, "rt") as fh:
-                while count < n_reads:
-                    header = fh.readline()
-                    if not header:
-                        break
-                    fh.readline()  # seq
-                    fh.readline()  # +
-                    qual_str = fh.readline().rstrip()
-                    if not qual_str:
-                        break
-                    all_quals.append([ord(c) - 33 for c in qual_str])
-                    count += 1
-            if count >= n_reads:
-                break
-        return all_quals
-
-    if args.verbose:
-        print(f"Sampling {args.n_reads} reads from {n_files} file pairs...",
-              file=sys.stderr)
-
-    fwd_quals = _read_quals(fwd_sample, args.n_reads)
-    rev_quals = _read_quals(rev_sample, args.n_reads)
-
-    def _find_trunc_pos(quals_list, min_q, window):
-        """Find position where rolling median quality drops below threshold."""
-        if not quals_list:
-            return 0
-        max_len = max(len(q) for q in quals_list)
-        # Build quality matrix (NaN-padded)
-        mat = np.full((len(quals_list), max_len), np.nan)
-        for i, q in enumerate(quals_list):
-            mat[i, :len(q)] = q
-        medians = np.nanmedian(mat, axis=0)
-        # Rolling mean of medians over window
-        if len(medians) < window:
-            return len(medians)
-        rolling = np.convolve(medians, np.ones(window) / window, mode="valid")
-        for i, val in enumerate(rolling):
-            if val < min_q:
-                return i + window // 2
-        return len(medians)
-
-    trunc_fwd = _find_trunc_pos(fwd_quals, args.min_quality, args.window)
-    trunc_rev = _find_trunc_pos(rev_quals, args.min_quality, args.window)
-
-    # Compute summary stats for reporting
-    def _median_at(quals_list, pos):
-        vals = [q[pos] for q in quals_list if len(q) > pos]
-        return float(np.median(vals)) if vals else 0.0
-
-    fwd_len = max(len(q) for q in fwd_quals) if fwd_quals else 0
-    rev_len = max(len(q) for q in rev_quals) if rev_quals else 0
-
-    if args.verbose:
-        print(f"Forward: max_len={fwd_len}, median_Q@end={_median_at(fwd_quals, fwd_len-1):.0f}",
-              file=sys.stderr)
-        print(f"Reverse: max_len={rev_len}, median_Q@end={_median_at(rev_quals, rev_len-1):.0f}",
-              file=sys.stderr)
-
-    # Output as key=value for easy parsing
-    print(f"trunc_len_fwd={trunc_fwd}")
-    print(f"trunc_len_rev={trunc_rev}")
-    print(f"fwd_read_len={fwd_len}")
-    print(f"rev_read_len={rev_len}")
-    print(f"n_reads_sampled={len(fwd_quals)}")
-
-    # Write to file if requested
-    if args.output:
-        with open(args.output, "w") as f:
-            f.write(f"trunc_len_fwd\t{trunc_fwd}\n")
-            f.write(f"trunc_len_rev\t{trunc_rev}\n")
-            f.write(f"fwd_read_len\t{fwd_len}\n")
-            f.write(f"rev_read_len\t{rev_len}\n")
-            f.write(f"min_quality\t{args.min_quality}\n")
-            f.write(f"n_reads_sampled\t{len(fwd_quals)}\n")
-
-
 def _cmd_assign_taxonomy(args):
     """Run taxonomy assignment."""
     from .taxonomy import assign_taxonomy
@@ -235,16 +129,6 @@ def main(argv=None):
     ft.add_argument("--sample-id", help="Sample ID for stats TSV [default: input filename]")
     ft.add_argument("-v", "--verbose", action="store_true")
 
-    # -- auto-trim --
-    aq = sub.add_parser("auto-trim", help="Analyze quality profiles and recommend truncation lengths")
-    aq.add_argument("input_dir", help="Directory containing paired FASTQ files")
-    aq.add_argument("--min-quality", type=float, default=25, help="Min rolling median Q to keep [default: 25]")
-    aq.add_argument("--window", type=int, default=10, help="Rolling window size for quality smoothing [default: 10]")
-    aq.add_argument("--n-reads", type=int, default=10000, help="Number of reads to sample [default: 10000]")
-    aq.add_argument("--n-files", type=int, default=20, help="Number of files to sample from [default: 20]")
-    aq.add_argument("-o", "--output", help="Write results to TSV file")
-    aq.add_argument("-v", "--verbose", action="store_true")
-
     # -- assign-taxonomy --
     at = sub.add_parser("assign-taxonomy", help="Naive Bayesian taxonomy assignment")
     at.add_argument("seqs", help="Query sequences (pickle file)")
@@ -264,7 +148,5 @@ def main(argv=None):
 
     if args.command == "filter-trim":
         _cmd_filter_trim(args)
-    elif args.command == "auto-trim":
-        _cmd_auto_trim(args)
     elif args.command == "assign-taxonomy":
         _cmd_assign_taxonomy(args)
