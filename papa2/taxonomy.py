@@ -82,21 +82,31 @@ def _parse_taxonomy_standard(header: str) -> str:
 
     Handles two formats:
 
-    1. SeqID followed by taxonomy (separated by whitespace)::
-
-        >SeqID Kingdom;Phylum;Class;Order;Family;Genus;Species
-
-    2. SILVA-style: entire header is the taxonomy (no sequence ID)::
+    1. SILVA-style: entire header is the taxonomy (no sequence ID),
+       may contain spaces within taxon names::
 
         >Kingdom;Phylum;Class;Order;Family;Genus;
 
+    2. SeqID followed by taxonomy (separated by whitespace)::
+
+        >SeqID Kingdom;Phylum;Class;Order;Family;Genus;Species
+
+    SILVA-style is detected first (starts with a semicolon-delimited
+    string) to avoid splitting on spaces within taxon names.
     """
-    parts = header.split(None, 1)
+    stripped = header.strip()
+    # If the header starts with text followed by a semicolon before any
+    # whitespace, treat the entire header as the taxonomy string.
+    # This handles SILVA format where taxon names can contain spaces
+    # (e.g. "Bacteria;...;SAR11 clade;Clade Ia;")
+    semi_pos = stripped.find(";")
+    space_pos = stripped.find(" ")
+    if semi_pos > 0 and (space_pos < 0 or semi_pos < space_pos):
+        return stripped
+    # Otherwise: SeqID + taxonomy separated by whitespace
+    parts = stripped.split(None, 1)
     if len(parts) >= 2:
         return parts[1].strip()
-    # No whitespace — if it contains semicolons, treat entire header as taxonomy
-    if ";" in header:
-        return header.strip()
     return ""
 
 
