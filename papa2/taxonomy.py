@@ -80,16 +80,24 @@ def _parse_taxonomy_unite(header: str) -> str:
 def _parse_taxonomy_standard(header: str) -> str:
     """Extract semicolon-delimited taxonomy from a standard dada2 header.
 
-    Standard format::
+    Handles two formats:
+
+    1. SeqID followed by taxonomy (separated by whitespace)::
 
         >SeqID Kingdom;Phylum;Class;Order;Family;Genus;Species
 
-    Everything after the first whitespace is treated as the taxonomy string.
+    2. SILVA-style: entire header is the taxonomy (no sequence ID)::
+
+        >Kingdom;Phylum;Class;Order;Family;Genus;
+
     """
     parts = header.split(None, 1)
-    if len(parts) < 2:
-        return ""
-    return parts[1].strip()
+    if len(parts) >= 2:
+        return parts[1].strip()
+    # No whitespace — if it contains semicolons, treat entire header as taxonomy
+    if ";" in header:
+        return header.strip()
+    return ""
 
 
 # ---------------------------------------------------------------------------
