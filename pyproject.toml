@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=68", "setuptools-scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "papa2"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Python-first amplicon denoising derived from the standalone DADA2 port"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -57,3 +57,18 @@ packages = ["papa2"]
 
 [tool.setuptools.package-data]
 papa2 = ["*.so"]
+
+# Version comes from git, not from a string in this file.
+#
+# It was pinned at "0.1.0" and never moved, so every build of this package reported the
+# same version regardless of what was in it — and since microscape-nf installs it with
+# `pip install git+https://...`, a pipeline run could not say which code it had. Between
+# tags setuptools-scm produces e.g. 0.1.1.dev5+gd9b4645, which carries the commit in the
+# version string itself.
+#
+# Tag a release deliberately (`git tag -a v0.2.0 -m ...`); everything between tags
+# increments on its own.
+[tool.setuptools_scm]
+version_file = "papa2/_version.py"
+# pip sometimes clones without tags; fail soft rather than breaking the install.
+fallback_version = "0.0.0+unknown"
