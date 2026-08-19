@@ -62,23 +62,35 @@ def _open_maybe_gz(path: str):
 def _parse_fasta(path: str) -> List[Tuple[str, str]]:
     """Parse a FASTA file into (header, sequence) pairs.
 
-    Supports gzip-compressed files.
+    Supports gzip-compressed files.  The whole file is decompressed and
+    split in bulk (with isal acceleration when available).
     """
+    if path.endswith(".gz"):
+        try:
+            from isal import igzip as _ig
+            with _ig.open(path, "rb") as fh:
+                data = fh.read()
+        except ImportError:
+            with gzip.open(path, "rb") as fh:
+                data = fh.read()
+    else:
+        with open(path, "rb") as fh:
+            data = fh.read()
+
+    text = data.decode("ascii", "replace")
+    del data
     records: List[Tuple[str, str]] = []
-    header = None
-    seq_parts: List[str] = []
-    with _open_maybe_gz(path) as fh:
-        for line in fh:
-            line = line.rstrip("\n\r")
-            if line.startswith(">"):
-                if header is not None:
-                    records.append((header, "".join(seq_parts).upper()))
-                header = line[1:]
-                seq_parts = []
-            else:
-                seq_parts.append(line.strip())
-        if header is not None:
-            records.append((header, "".join(seq_parts).upper()))
+    chunks = text.split("\n>")
+    for i, chunk in enumerate(chunks):
+        if i == 0:
+            if not chunk.startswith(">"):
+                continue  # leading junk before the first header
+            chunk = chunk[1:]
+        header, _, body = chunk.partition("\n")
+        header = header.rstrip("\r")
+        lines = body.split("\n")
+        seq = "".join(ln.strip() for ln in lines).upper()
+        records.append((header, seq))
     return records
 
 
