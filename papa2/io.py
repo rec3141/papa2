@@ -23,7 +23,7 @@ try:
         ]
 
     _lib.derep_fastq_c.restype = ct.POINTER(_DerepResult)
-    _lib.derep_fastq_c.argtypes = [ct.c_char_p]
+    _lib.derep_fastq_c.argtypes = [ct.c_char_p, ct.c_int]
     _lib.derep_result_free.restype = None
     _lib.derep_result_free.argtypes = [ct.POINTER(_DerepResult)]
     _HAS_C_DEREP = True
@@ -31,10 +31,10 @@ except (OSError, AttributeError):
     _HAS_C_DEREP = False
 
 
-def _derep_fastq_c(filepath):
+def _derep_fastq_c(filepath, qual_offset=-1):
     """Fast C dereplication via zlib."""
     path_bytes = filepath.encode('utf-8') if isinstance(filepath, str) else filepath
-    res_ptr = _lib.derep_fastq_c(path_bytes)
+    res_ptr = _lib.derep_fastq_c(path_bytes, ct.c_int(qual_offset))
     if not res_ptr:
         raise RuntimeError(f"Failed to derep {filepath}")
     res = res_ptr.contents
@@ -52,11 +52,16 @@ def _derep_fastq_c(filepath):
 
 
 def _derep_one(args):
-    filepath, verbose = args
-    return derep_fastq(filepath, verbose=verbose)
+    filepath, verbose, quality_type = args
+    return derep_fastq(filepath, verbose=verbose, quality_type=quality_type)
 
 
-def derep_fastq(filepath, verbose=False, with_map=False, multithread=True):
+_QUAL_OFFSETS = {"Auto": -1, "FastqQuality": 33, "SFastqQuality": 64,
+                 "SolexaQuality": 64}
+
+
+def derep_fastq(filepath, verbose=False, with_map=False, multithread=True,
+                quality_type="Auto"):
     """Dereplicate a FASTQ file (or a list of them).
 
     Uses C implementation (zlib) when available for ~2x speedup.
@@ -65,6 +70,10 @@ def derep_fastq(filepath, verbose=False, with_map=False, multithread=True):
 
     A list of paths returns a list of results; with multithread (default)
     the files are processed in a worker pool.
+
+    quality_type follows R: "Auto" (default) detects Phred+33 vs Phred+64
+    per file with ShortRead's rule; "FastqQuality" and "SFastqQuality"
+    force the offset.
 
     Returns:
         dict with keys:
@@ -81,7 +90,7 @@ def derep_fastq(filepath, verbose=False, with_map=False, multithread=True):
             n_workers = min(len(files), multithread)
         else:
             n_workers = 1
-        tasks = [(f, verbose) for f in files]
+        tasks = [(f, verbose, quality_type) for f in files]
         if n_workers > 1:
             try:
                 from loky import get_reusable_executor
@@ -91,9 +100,13 @@ def derep_fastq(filepath, verbose=False, with_map=False, multithread=True):
                 pass
         return [_derep_one(t) for t in tasks]
 
+    if quality_type not in _QUAL_OFFSETS:
+        raise ValueError(f"Unknown quality_type: {quality_type!r}")
+    offset = _QUAL_OFFSETS[quality_type]
+
     # Use C implementation if available
     if _HAS_C_DEREP:
-        result = _derep_fastq_c(filepath)
+        result = _derep_fastq_c(filepath, offset)
         if verbose:
             print(f"Read {result['abundances'].sum()} reads, {len(result['seqs'])} unique sequences")
         return result
@@ -132,13 +145,23 @@ def derep_fastq(filepath, verbose=False, with_map=False, multithread=True):
     maxlen = max(len(s) for s in first_seen) if first_seen else 0
 
     # Phase 2: Accumulate quality scores using numpy frombuffer
+    _py_offset = float(offset)
+    if offset < 0:
+        lo, hi = 255, 0
+        for i in range(min(n_reads, 10000)):
+            ql = lines[i * 4 + 3]
+            if ql:
+                lo = min(lo, min(ql))
+                hi = max(hi, max(ql))
+        _py_offset = 64.0 if (hi and lo >= 59 and hi >= 75) else 33.0
+
     qual_sums = np.zeros((n_uniques, maxlen), dtype=np.float64)
 
     for i in range(n_reads):
         uid = read_uid[i]
         qline = lines[i * 4 + 3]
         q = np.frombuffer(qline, dtype=np.uint8).astype(np.float64)
-        q -= 33.0
+        q -= _py_offset
         slen = len(q)
         qual_sums[uid, :slen] += q
 

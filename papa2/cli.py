@@ -24,7 +24,7 @@ def _cmd_filter_trim(args):
         args.fwd, args.filt_fwd,
         args.rev, args.filt_rev,
         max_ee=(args.max_ee, args.max_ee),
-        trunc_q=(args.trunc_q, args.trunc_q) if args.trunc_q is not None else (None, None),
+        trunc_q=(args.trunc_q, args.trunc_q) if (args.trunc_q is not None and args.trunc_q >= 0) else (None, None),
         max_n=(args.max_n, args.max_n),
         trunc_len=(args.trunc_len_fwd, args.trunc_len_rev),
         min_len=(args.min_len, args.min_len),
@@ -119,7 +119,7 @@ def main(argv=None):
     ft.add_argument("rev", help="Reverse input FASTQ")
     ft.add_argument("filt_rev", help="Filtered reverse output FASTQ")
     ft.add_argument("--max-ee", type=float, default=float("inf"), help="Max expected errors [default: inf]")
-    ft.add_argument("--trunc-q", type=int, default=None, help="Truncate at first base with Q <= this")
+    ft.add_argument("--trunc-q", type=int, default=2, help="Truncate at first base with Q <= this [default: 2, matching R]; negative disables")
     ft.add_argument("--max-n", type=int, default=0, help="Max ambiguous bases [default: 0]")
     ft.add_argument("--trunc-len-fwd", type=int, default=0, help="Truncate forward reads to length [default: 0 = off]")
     ft.add_argument("--trunc-len-rev", type=int, default=0, help="Truncate reverse reads to length [default: 0 = off]")

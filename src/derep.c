@@ -96,7 +96,10 @@ static int cmp_read_by_seq(const void *a, const void *b) {
     return ra->seq_len - rb->seq_len;
 }
 
-DerepResult* derep_fastq_c(const char *filepath) {
+/* qual_offset: Phred encoding offset (33 or 64); pass -1 to auto-detect
+ * with ShortRead's rule — over the first 10,000 reads, Phred+64 iff the
+ * smallest quality byte is >= 59 (';') and the largest is >= 75 ('K'). */
+DerepResult* derep_fastq_c(const char *filepath, int qual_offset) {
     gzFile gz = gzopen(filepath, "rb");
     if (!gz) return NULL;
 
@@ -182,6 +185,20 @@ DerepResult* derep_fastq_c(const char *filepath) {
     free(line);
     free(seq_line);
 
+    /* Auto-detect quality encoding (ShortRead's .qualityTypeAuto rule) */
+    if (qual_offset < 0) {
+        int lo = 255, hi = 0;
+        int nscan = n_reads < 10000 ? n_reads : 10000;
+        for (int i = 0; i < nscan; i++) {
+            const unsigned char *q = (const unsigned char *)(pool + reads[i].qual_offset);
+            for (; *q; q++) {
+                if (*q < lo) lo = *q;
+                if (*q > hi) hi = *q;
+            }
+        }
+        qual_offset = (hi > 0 && lo >= 59 && hi >= 75) ? 64 : 33;
+    }
+
     /* Phase 2: Sort reads by sequence (lexical) to match R's srsort */
     g_pool = pool;
     qsort(reads, n_reads, sizeof(ReadRec), cmp_read_by_seq);
@@ -216,7 +233,7 @@ DerepResult* derep_fastq_c(const char *filepath) {
         e->count++;
         int mlen = slen < qlen ? slen : qlen;
         for (int j = 0; j < mlen; j++)
-            e->qual_sum[j] += (long)((unsigned char)qline[j] - 33);
+            e->qual_sum[j] += (long)((unsigned char)qline[j] - qual_offset);
 
         orig_to_insert[reads[i].orig_index] = e->insert_id;
     }
