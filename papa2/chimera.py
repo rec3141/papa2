@@ -1,7 +1,7 @@
 """High-level chimera detection functions matching R's dada2 interface."""
 
 import numpy as np
-from ._cdada import is_bimera, table_bimera
+from ._cdada import is_bimera, is_bimera_denovo_batch, table_bimera
 
 
 def is_bimera_denovo(seqtab_row, seqs, allow_one_off=False,
@@ -17,8 +17,9 @@ def is_bimera_denovo(seqtab_row, seqs, allow_one_off=False,
         seqs: list of ASV sequences (str, ACGT), same length as seqtab_row.
         allow_one_off: allow one mismatch in chimera model.
         min_one_off_par_dist: min hamming distance between parents for one-off.
-        min_fold: parent must be this-fold more abundant than the query.
-        min_abund: parent minimum absolute abundance.
+        min_fold: parent must be strictly more than this-fold more
+            abundant than the query.
+        min_abund: parents must be strictly more abundant than this.
         match, mismatch, gap_p, max_shift: NW alignment parameters.
 
     Returns:
@@ -29,27 +30,15 @@ def is_bimera_denovo(seqtab_row, seqs, allow_one_off=False,
     if n == 0:
         return np.array([], dtype=bool)
 
-    # Sort by decreasing abundance for parent ordering
-    order = np.argsort(-row)
-    flags = np.zeros(n, dtype=bool)
-
-    for idx in range(n):
-        j = order[idx]
-        if row[j] <= 0:
-            continue
-        # Gather parents: more abundant sequences
-        parents = []
-        for k in order:
-            if row[k] > min_fold * row[j] and row[k] >= min_abund:
-                parents.append(seqs[k])
-        if len(parents) == 0:
-            continue
-        flags[j] = is_bimera(seqs[j], parents,
-                             allow_one_off=allow_one_off,
-                             min_one_off_par_dist=min_one_off_par_dist,
-                             match=match, mismatch=mismatch,
-                             gap_p=gap_p, max_shift=max_shift)
-    return flags
+    # R's isBimeraDenovo: parents are sequences with abundance strictly
+    # greater than min_fold * the query's abundance AND strictly greater
+    # than min_abund, in input order; fewer than two parents means not
+    # chimeric.  The scan runs OpenMP-parallel in C.
+    return is_bimera_denovo_batch(
+        seqs, row, min_fold=min_fold, min_abund=min_abund,
+        allow_one_off=allow_one_off,
+        min_one_off_par_dist=min_one_off_par_dist,
+        match=match, mismatch=mismatch, gap_p=gap_p, max_shift=max_shift)
 
 
 def remove_bimera_denovo(seqtab, method="consensus", min_fold=None,

@@ -435,6 +435,51 @@ _lib.dada2_is_bimera.argtypes = [
     ct.c_int, ct.c_int, ct.c_int, ct.c_int,  # match, mismatch, gap_p, max_shift
 ]
 
+_lib.dada2_is_bimera_denovo_batch.restype = None
+_lib.dada2_is_bimera_denovo_batch.argtypes = [
+    ct.POINTER(ct.c_char_p),   # seqs
+    ct.POINTER(ct.c_int),      # abunds
+    ct.c_int,                  # n
+    ct.c_double,               # min_fold
+    ct.c_int,                  # min_abund
+    ct.c_int,                  # allow_one_off
+    ct.c_int,                  # min_one_off_par_dist
+    ct.c_int, ct.c_int, ct.c_int, ct.c_int,  # match, mismatch, gap_p, max_shift
+    ct.POINTER(ct.c_int),      # out flags
+]
+
+
+def is_bimera_denovo_batch(seqs, abunds, min_fold=2, min_abund=8,
+                           allow_one_off=False, min_one_off_par_dist=4,
+                           match=5, mismatch=-4, gap_p=-8, max_shift=16):
+    """R's isBimeraDenovo over one abundance vector, OpenMP-parallel in C.
+
+    For each sequence, parents are those with abundance strictly greater
+    than min_fold * its abundance AND strictly greater than min_abund
+    (input order); sequences with fewer than two parents are not chimeric.
+
+    Returns a boolean numpy array.
+    """
+    n = len(seqs)
+    if n == 0:
+        return np.zeros(0, dtype=bool)
+    seq_arr = (ct.c_char_p * n)()
+    for i, s in enumerate(seqs):
+        seq_arr[i] = s.encode("ascii") if isinstance(s, str) else s
+    ab = np.ascontiguousarray(abunds, dtype=np.int32)
+    flags = np.zeros(n, dtype=np.int32)
+    _lib.dada2_is_bimera_denovo_batch(
+        seq_arr,
+        ab.ctypes.data_as(ct.POINTER(ct.c_int)),
+        ct.c_int(n),
+        ct.c_double(min_fold), ct.c_int(min_abund),
+        ct.c_int(int(allow_one_off)), ct.c_int(min_one_off_par_dist),
+        ct.c_int(match), ct.c_int(mismatch), ct.c_int(gap_p), ct.c_int(max_shift),
+        flags.ctypes.data_as(ct.POINTER(ct.c_int)),
+    )
+    return flags.astype(bool)
+
+
 _lib.dada2_table_bimera.restype = ct.POINTER(ChimeraResult)
 _lib.dada2_table_bimera.argtypes = [
     ct.POINTER(ct.c_int),      # mat

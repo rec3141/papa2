@@ -192,6 +192,46 @@ int dada2_is_bimera(
 }
 
 /* ================================================================
+   dada2_is_bimera_denovo_batch — R's isBimeraDenovo over one
+   abundance vector: for each sequence, parents are those with
+   abundance strictly greater than min_fold * its abundance AND
+   strictly greater than min_abund, taken in input order; sequences
+   with fewer than two parents are not chimeric.  OpenMP-parallel
+   over sequences.
+   ================================================================ */
+
+extern "C"
+void dada2_is_bimera_denovo_batch(
+    const char **seqs,
+    const int *abunds,
+    int n,
+    double min_fold,
+    int min_abund,
+    int allow_one_off,
+    int min_one_off_par_dist,
+    int match, int mismatch, int gap_p, int max_shift,
+    int *out_flags)
+{
+  #pragma omp parallel for schedule(dynamic, 8)
+  for (int i = 0; i < n; i++) {
+    double abund = (double)abunds[i];
+    std::vector<const char *> pars;
+    for (int k = 0; k < n; k++) {
+      if ((double)abunds[k] > min_fold * abund && abunds[k] > min_abund) {
+        pars.push_back(seqs[k]);
+      }
+    }
+    if (pars.size() < 2) {
+      out_flags[i] = 0;
+      continue;
+    }
+    out_flags[i] = dada2_is_bimera(seqs[i], pars.data(), (int)pars.size(),
+                                   allow_one_off, min_one_off_par_dist,
+                                   match, mismatch, gap_p, max_shift);
+  }
+}
+
+/* ================================================================
    dada2_table_bimera — consensus table-level chimera detection
    ================================================================ */
 

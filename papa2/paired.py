@@ -7,6 +7,7 @@ from ._cdada import nwalign, eval_pair, pair_consensus, rc
 
 def merge_pairs(dadaF, derepF, dadaR, derepR,
                 min_overlap=12, max_mismatch=0,
+                return_rejects=False,
                 trim_overhang=False, just_concatenate=False,
                 verbose=False):
     """Merge denoised forward and reverse reads into full amplicon sequences.
@@ -22,6 +23,8 @@ def merge_pairs(dadaF, derepF, dadaR, derepR,
         derepR: same structure as derepF, for reverse reads.
         min_overlap: minimum overlap required for merging (default 12).
         max_mismatch: maximum mismatches allowed in the overlap (default 0).
+        return_rejects: if True, rejected pairs are kept in the output with
+            'accept': False and an empty sequence (R's returnRejects).
         trim_overhang: if True, trim overhanging ends of the merged sequence
                        (default False).
         just_concatenate: if True, concatenate rather than merge (inserts 10 Ns
@@ -37,7 +40,12 @@ def merge_pairs(dadaF, derepF, dadaR, derepR,
             'nmatch': number of matches in overlap
             'nmismatch': number of mismatches in overlap
             'nindel': number of indels in overlap
+            'prefer': which read's base wins mismatch positions (1=forward,
+                      2=reverse), chosen by the larger denoised n0
+                      (R's mergePairs behaviour); None when concatenating
             'accept': whether the pair passed the overlap/mismatch criteria
+
+    Only accepted pairs are returned unless return_rejects is True.
     """
     # --- Step 1: Map each read to its denoised cluster ---
     # derepF['map'] maps read -> unique index (0-indexed)
@@ -64,6 +72,11 @@ def merge_pairs(dadaF, derepF, dadaR, derepR,
     # Get cluster sequences
     fwd_seqs = dadaF["cluster_seqs"]
     rev_seqs = dadaR["cluster_seqs"]
+
+    # n0 per cluster decides which read is preferred at mismatch positions
+    # (R: prefer = 1 + (dadaR$clustering$n0 > dadaF$clustering$n0))
+    n0_F = np.asarray(dadaF.get("cluster_n0", np.zeros(len(fwd_seqs))), dtype=np.int64)
+    n0_R = np.asarray(dadaR.get("cluster_n0", np.zeros(len(rev_seqs))), dtype=np.int64)
 
     # Alignment scoring: stringent defaults for merging
     # match=1, mismatch=-64, gap=-64 makes NW alignment find the overlap
@@ -94,6 +107,7 @@ def merge_pairs(dadaF, derepF, dadaR, derepR,
                 "nmatch": 0,
                 "nmismatch": 0,
                 "nindel": 0,
+                "prefer": None,
                 "accept": True,
             })
             continue
@@ -109,9 +123,9 @@ def merge_pairs(dadaF, derepF, dadaR, derepR,
         # Accept/reject based on criteria
         accept = (nmatch >= min_overlap) and ((nmismatch + nindel) <= max_mismatch)
 
+        prefer = 2 if n0_R[ri] > n0_F[fi] else 1
         if accept:
-            # Build consensus (prefer forward sequence on mismatch)
-            merged = pair_consensus(al1, al2, prefer=1,
+            merged = pair_consensus(al1, al2, prefer=prefer,
                                     trim_overhang=trim_overhang)
         else:
             merged = ""
@@ -128,11 +142,15 @@ def merge_pairs(dadaF, derepF, dadaR, derepR,
             "nmatch": nmatch,
             "nmismatch": nmismatch,
             "nindel": nindel,
+            "prefer": prefer,
             "accept": accept,
         })
 
-    # --- Step 4: Sort by abundance descending ---
+    # --- Step 4: Sort by abundance descending (stable, like R's order) ---
     results.sort(key=lambda x: x["abundance"], reverse=True)
+
+    if not return_rejects:
+        results = [r for r in results if r["accept"]]
 
     if verbose:
         n_accept = sum(1 for r in results if r["accept"])
