@@ -17,6 +17,19 @@
 #include <omp.h>
 #endif
 
+extern "C" {
+/* Set the default OpenMP thread count for subsequent parallel regions.
+ * Needed because libgomp reads OMP_NUM_THREADS when it is loaded, so
+ * setting the environment variable afterwards has no effect. */
+void dada2_set_omp_threads(int n) {
+#ifdef _OPENMP
+    if (n > 0) omp_set_num_threads(n);
+#else
+    (void)n;
+#endif
+}
+}
+
 /* 2-bit encode one base; -1 otherwise.  Uppercase only: R's C_matchRef
  * compares raw kmer strings, so lowercase never matches the (uppercase)
  * reference — a lowercase base here must likewise produce no match. */

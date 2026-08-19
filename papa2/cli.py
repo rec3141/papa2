@@ -68,7 +68,8 @@ def _cmd_assign_taxonomy(args):
     if args.verbose:
         print(f"{len(seqs)} query sequences", file=sys.stderr)
 
-    os.environ["OMP_NUM_THREADS"] = str(args.threads)
+    from ._cdada import set_num_threads
+    set_num_threads(args.threads)
 
     kw = dict(
         seqs=seqs,

@@ -219,6 +219,8 @@ def dada(derep, err=None, error_estimation_function=None, self_consist=False,
             cluster_seqs, cluster_abunds, trans, map, pval, err_in, err_out
 
     Environment variables:
+        DADA2_CORES: total cores to plan for (default: os.cpu_count();
+            set this under containers/schedulers that allocate fewer)
         DADA2_WORKERS: number of sample-level worker processes
             (0 = auto-detect, default)
         DADA2_OMP_THREADS: OpenMP threads per worker for the within-sample
@@ -289,7 +291,9 @@ def dada(derep, err=None, error_estimation_function=None, self_consist=False,
     # invocations.  Cores are split between sample-level workers and the
     # within-sample OpenMP comparison loop, so a lone pooled sample uses
     # every core while many small samples get one core each.
-    cores = os.cpu_count() or 1
+    # DADA2_CORES bounds the total-core estimate (containers and batch
+    # schedulers often allocate fewer cores than os.cpu_count reports)
+    cores = int(os.environ.get("DADA2_CORES", "0")) or (os.cpu_count() or 1)
     n_workers = int(os.environ.get("DADA2_WORKERS", "0"))
     if n_workers == 0:
         n_workers = min(len(derep), cores)
@@ -448,7 +452,9 @@ def learn_errors(fastq_files, nbases=1e8, error_estimation_function=None,
                            count=len(drp["seqs"]))
         return int((np.asarray(drp["abundances"], dtype=np.int64) * lens).sum())
 
-    n_workers = int(os.environ.get("DADA2_WORKERS", "0")) or (os.cpu_count() or 1)
+    n_workers = (int(os.environ.get("DADA2_WORKERS", "0"))
+                 or int(os.environ.get("DADA2_CORES", "0"))
+                 or (os.cpu_count() or 1))
     n_workers = min(n_workers, len(fastq_files))
     if n_workers > 1 and len(fastq_files) > 1:
         with _make_pool(n_workers) as pool:
