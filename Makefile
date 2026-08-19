@@ -2,8 +2,8 @@
 
 CXX ?= g++
 CC ?= gcc
-CXXFLAGS += -fPIC -std=c++11 -DNO_RCPP -DNDEBUG -fopenmp -Wno-format
-CFLAGS += -fPIC -DNDEBUG
+CXXFLAGS += -O2 -g -fPIC -std=c++11 -DNO_RCPP -DNDEBUG -fopenmp -Wno-format
+CFLAGS += -O2 -g -fPIC -DNDEBUG
 
 # Source files for standalone build (excludes Rmain.cpp, RcppExports.cpp,
 # taxonomy.cpp, chimera.cpp, evaluate.cpp, filter.cpp)

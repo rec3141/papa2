@@ -13,6 +13,7 @@ using vectorized numpy operations.
 from __future__ import annotations
 
 import gzip
+import multiprocessing
 import os
 import zlib
 from concurrent.futures import ProcessPoolExecutor
@@ -1043,7 +1044,9 @@ def filter_and_trim(
         tasks = [(fwd[i], filt[i], se_kw) for i in range(n_files)]
 
     if n_workers > 1 and n_files > 1:
-        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+        # spawn: forking after an OpenMP region deadlocks the child
+        ctx = multiprocessing.get_context("spawn")
+        with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
             runner = _run_paired_task if paired else _run_single_task
             futures = {pool.submit(runner, t): i for i, t in enumerate(tasks)}
             for fut in futures:
