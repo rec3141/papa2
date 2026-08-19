@@ -16,10 +16,10 @@ Full documentation: **https://rec3141.github.io/papa2**
 
 ## Key Features
 
-- **Byte-identical to R dada2** — same ASVs, same error models, same quality filtering, [validated against R on every function](tests/compare_with_r.py)
+- **Byte-identical to R dada2** — same ASVs, same error models, same quality filtering, [validated against R on every function](tests/compare_with_r.py); filtered FASTQ output is byte-identical to R's, sequence tables match R in both counts and column order, and seeded taxonomy bootstraps reproduce an R session's `set.seed(N)` stream
 - **Complete port** — all 37 user-facing R functions: `filter_and_trim`, `derep_fastq`, `learn_errors`, `dada`, `merge_pairs`, `make_sequence_table`, `remove_bimera_denovo`, `assign_taxonomy`, and more
 - **No R dependency** — standalone Python package with a compiled C/C++ core (`libpapa2.so`)
-- **Parallel multi-sample processing** — scales across CPU cores via `ProcessPoolExecutor`
+- **Fast** — vectorized numpy filtering with isal-accelerated gzip, OpenMP in the C core, and sample-level worker pools; cores are split automatically between samples and within-sample threads (`DADA2_WORKERS` / `DADA2_OMP_THREADS` to override)
 - **Interactive visualisation** — Sankey diagrams for read tracking, error rate plots, quality profiles
 - **Container-ready** — Docker and Apptainer (HPC) images on GHCR
 

@@ -29,7 +29,9 @@ classifiers = [
 ]
 dependencies = [
   "numpy",
-  "pandas"
+  "pandas",
+  "isal",
+  "loky"
 ]
 
 [project.urls]

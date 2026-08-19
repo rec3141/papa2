@@ -213,7 +213,8 @@ void b_compare_parallel(B *b, unsigned int i, Rcpp::NumericMatrix errMat,
 void b_compare_omp(B *b, unsigned int i, double *err_mat, unsigned int ncol,
                    int match, int mismatch, int gap_pen, int homo_gap_pen,
                    bool use_kmers, double kdist_cutoff, int band_size,
-                   bool vectorized_alignment, int SSE, bool gapless, bool greedy, bool verbose) {
+                   bool vectorized_alignment, int SSE, bool gapless, bool greedy, bool verbose,
+                   int nthreads) {
   unsigned int index, cind;
   double lambda;
   Raw *raw;
@@ -224,7 +225,9 @@ void b_compare_omp(B *b, unsigned int i, double *err_mat, unsigned int ncol,
 
   unsigned int center_reads = b->bi[i]->center->reads;
 
-  #pragma omp parallel for schedule(dynamic, GRAIN_SIZE) private(raw)
+  /* nthreads <= 1 runs serially; 0 means use the OpenMP default. */
+  if(nthreads < 1) nthreads = omp_get_max_threads();
+  #pragma omp parallel for schedule(dynamic, GRAIN_SIZE) private(raw) num_threads(nthreads)
   for(unsigned int idx = 0; idx < b->nraw; idx++) {
     Sub *sub;
     raw = b->raw[idx];

@@ -124,6 +124,7 @@ def assign_taxonomy(
         "Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species",
     ),
     verbose: bool = False,
+    seed: Optional[int] = None,
 ) -> Union[pd.DataFrame, Dict[str, pd.DataFrame]]:
     """Classify sequences against a reference taxonomy using the RDP
     Naive Bayesian Classifier method.
@@ -150,6 +151,10 @@ def assign_taxonomy(
             in the reference database headers (shorter reference taxonomies
             are padded with ``None``).
         verbose: Print progress messages.
+        seed: Bootstrap RNG seed.  With an integer seed the bootstrap
+            values are identical to an R session that calls
+            ``set.seed(seed)`` immediately before ``assignTaxonomy()``.
+            ``None`` (default) uses a nondeterministic seed.
 
     Returns:
         A :class:`pandas.DataFrame` with query sequences as the index and
@@ -256,6 +261,7 @@ def assign_taxonomy(
         ref_to_genus, genusmat,
         n_genus, n_levels,
         verbose=verbose,
+        seed=seed,
     )
     rval = result["rval"]    # (n_seqs,) int32, 1-indexed best genus (0=NA)
     rboot = result["rboot"]  # (n_seqs, n_levels) int32, bootstrap counts
@@ -277,6 +283,7 @@ def assign_taxonomy(
                 ref_to_genus, genusmat,
                 n_genus, n_levels,
                 verbose=verbose,
+                seed=seed,
             )
             rc_rval = rc_result["rval"]
             rc_rboot = rc_result["rboot"]

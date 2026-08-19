@@ -12,6 +12,11 @@
   #include <cstdio>
   #include <cstdlib>
   #include <cstdarg>
+  #ifdef _OPENMP
+    #include <omp.h>
+  #else
+    static inline int omp_get_max_threads() { return 1; }
+  #endif
   #define Rprintf printf
   inline void dada2_error(const char *fmt, ...) {
     va_list args; va_start(args, fmt);
@@ -162,7 +167,7 @@ unsigned int bi_add_raw(Bi *bi, Raw *raw);
 void b_compare(B *b, unsigned int i, Rcpp::NumericMatrix errMat, int match, int mismatch, int gap_pen, int homo_gap_pen, bool use_kmers, double kdist_cutoff, int band_size, bool vectorized_alignment, int SSE, bool gapless, bool greedy, bool verbose);
 void b_compare_parallel(B *b, unsigned int i, Rcpp::NumericMatrix errMat, int match, int mismatch, int gap_pen, int homo_gap_pen, bool use_kmers, double kdist_cutoff, int band_size, bool vectorized_alignment, int SSE, bool gapless, bool greedy, bool verbose);
 #else
-void b_compare_omp(B *b, unsigned int i, double *err_mat, unsigned int ncol, int match, int mismatch, int gap_pen, int homo_gap_pen, bool use_kmers, double kdist_cutoff, int band_size, bool vectorized_alignment, int SSE, bool gapless, bool greedy, bool verbose);
+void b_compare_omp(B *b, unsigned int i, double *err_mat, unsigned int ncol, int match, int mismatch, int gap_pen, int homo_gap_pen, bool use_kmers, double kdist_cutoff, int band_size, bool vectorized_alignment, int SSE, bool gapless, bool greedy, bool verbose, int nthreads);
 #endif
 bool b_shuffle2(B *b);
 // void b_p_update_parallel(B *b);

@@ -2,12 +2,12 @@
 
 CXX ?= g++
 CC ?= gcc
-CXXFLAGS += -fPIC -std=c++11 -DNO_RCPP -DNDEBUG -fopenmp -Wno-format
-CFLAGS += -fPIC -DNDEBUG
+CXXFLAGS += -O2 -g -fPIC -std=c++11 -DNO_RCPP -DNDEBUG -fopenmp -Wno-format
+CFLAGS += -O2 -g -fPIC -DNDEBUG
 
 # Source files for standalone build (excludes Rmain.cpp, RcppExports.cpp,
 # taxonomy.cpp, chimera.cpp, evaluate.cpp, filter.cpp)
-CSRCS = src/derep.c src/loess.c
+CSRCS = src/derep.c src/loess.c src/r_rng.c
 
 SRCS = src/dada2_capi.cpp \
        src/paired_capi.cpp \
@@ -20,7 +20,8 @@ SRCS = src/dada2_capi.cpp \
        src/kmers.cpp \
        src/misc.cpp \
        src/nwalign_endsfree.cpp \
-       src/nwalign_vectorized.cpp
+       src/nwalign_vectorized.cpp \
+       src/filter_capi.cpp
 
 OBJS = $(SRCS:.cpp=.o)
 LDFLAGS += -lm -lz

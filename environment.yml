@@ -5,6 +5,8 @@ dependencies:
   - python=3.12
   - numpy
   - pandas
+  - python-isal
+  - loky
   - psutil
   - matplotlib
   - pytest

@@ -90,7 +90,8 @@ TaxResult* dada2_assign_taxonomy(
     const int *genusmat,
     int ngenus,
     int nlevel,
-    int verbose
+    int verbose,
+    long long seed  /* >= 0: R set.seed-compatible bootstrap stream; < 0: nondeterministic */
 );
 
 void dada2_tax_result_free(TaxResult *res);
@@ -154,6 +155,17 @@ ChimeraResult* dada2_table_bimera(
     int min_one_off_par_dist,
     int match, int mismatch, int gap_p, int max_shift
 );
+
+void dada2_is_bimera_denovo_batch(
+    const char **seqs,
+    const int *abunds,
+    int n,
+    double min_fold,
+    int min_abund,
+    int allow_one_off,
+    int min_one_off_par_dist,
+    int match, int mismatch, int gap_p, int max_shift,
+    int *out_flags);
 
 void dada2_chimera_result_free(ChimeraResult *res);
 

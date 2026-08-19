@@ -17,13 +17,22 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# PhiX reference: first 100 bp of the PhiX174 genome (GenBank: NC_001422.1)
-# Used for quick kmer-based matching in is_phix().
+# PhiX reference: the full PhiX174 genome (GenBank: NC_001422.1), identical
+# to the phix_genome.fa shipped with R dada2 — is_phix() must reproduce R's
+# isPhiX() exactly, which matches kmers against the whole (circular) genome.
 # ---------------------------------------------------------------------------
-_PHIX_100BP = (
-    "GAGTTTTATCGCTTCCATGACGCAGAAGTTAACACTTTCGGATATTTCTGATGAGTCGAAAAATTATCTT"
-    "GATAAAGCAGGAATTACTACTGCTTGTTTACGA"
-)
+_PHIX_GENOME_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "data", "phix_genome.fa")
+_PHIX_GENOME = None  # lazily loaded by _phix_genome()
+
+
+def _phix_genome() -> str:
+    global _PHIX_GENOME
+    if _PHIX_GENOME is None:
+        with open(_PHIX_GENOME_PATH) as fh:
+            _PHIX_GENOME = "".join(
+                line.strip() for line in fh if not line.startswith(">"))
+    return _PHIX_GENOME
 
 
 # ---------------------------------------------------------------------------
@@ -53,23 +62,35 @@ def _open_maybe_gz(path: str):
 def _parse_fasta(path: str) -> List[Tuple[str, str]]:
     """Parse a FASTA file into (header, sequence) pairs.
 
-    Supports gzip-compressed files.
+    Supports gzip-compressed files.  The whole file is decompressed and
+    split in bulk (with isal acceleration when available).
     """
+    if path.endswith(".gz"):
+        try:
+            from isal import igzip as _ig
+            with _ig.open(path, "rb") as fh:
+                data = fh.read()
+        except ImportError:
+            with gzip.open(path, "rb") as fh:
+                data = fh.read()
+    else:
+        with open(path, "rb") as fh:
+            data = fh.read()
+
+    text = data.decode("ascii", "replace")
+    del data
     records: List[Tuple[str, str]] = []
-    header = None
-    seq_parts: List[str] = []
-    with _open_maybe_gz(path) as fh:
-        for line in fh:
-            line = line.rstrip("\n\r")
-            if line.startswith(">"):
-                if header is not None:
-                    records.append((header, "".join(seq_parts).upper()))
-                header = line[1:]
-                seq_parts = []
-            else:
-                seq_parts.append(line.strip())
-        if header is not None:
-            records.append((header, "".join(seq_parts).upper()))
+    chunks = text.split("\n>")
+    for i, chunk in enumerate(chunks):
+        if i == 0:
+            if not chunk.startswith(">"):
+                continue  # leading junk before the first header
+            chunk = chunk[1:]
+        header, _, body = chunk.partition("\n")
+        header = header.rstrip("\r")
+        lines = body.split("\n")
+        seq = "".join(ln.strip() for ln in lines).upper()
+        records.append((header, seq))
     return records
 
 
@@ -565,12 +586,13 @@ def make_sequence_table(
     Args:
         samples_dict: ``{sample_name: {sequence: abundance}}``.
         order_by: How to order the columns.  ``"abundance"`` (default) sorts
-            by total abundance across all samples (descending).
-            ``"nsamples"`` sorts by number of samples in which the sequence
-            appears.  ``None`` for no ordering.
+            by total abundance across all samples (descending, stable —
+            matching R).  ``"nsamples"`` sorts by number of samples in
+            which the sequence appears.  ``None`` for no ordering.
 
     Returns:
-        A pandas DataFrame with samples as rows and sequences as columns.
+        dict with keys ``"table"`` (numpy int array, samples x sequences),
+        ``"seqs"`` (column sequences) and ``"sample_names"`` (row names).
     """
     import pandas as pd
 
@@ -636,11 +658,12 @@ def make_sequence_table(
         for seq, ab in samples_dict[sample_name].items():
             mat[i, seq_index[seq]] = int(ab)
 
-    # Order columns
+    # Order columns.  Stable sort: ties keep first-appearance order,
+    # matching R's order() in makeSequenceTable.
     if order_by == "abundance":
-        col_order = np.argsort(-mat.sum(axis=0))
+        col_order = np.argsort(-mat.sum(axis=0), kind="stable")
     elif order_by == "nsamples":
-        col_order = np.argsort(-(mat > 0).sum(axis=0))
+        col_order = np.argsort(-(mat > 0).sum(axis=0), kind="stable")
     else:
         col_order = np.arange(len(seq_list))
 
@@ -853,59 +876,98 @@ def write_fasta(
 # 8. is_phix
 # ---------------------------------------------------------------------------
 
+def match_ref(
+    seqs,
+    ref: str,
+    word_size: int = 16,
+    non_overlapping: bool = True,
+) -> np.ndarray:
+    """Count reference kmer hits per sequence (port of R's C_matchRef).
+
+    The reference is treated as circular: kmers starting at every position,
+    wrapping around the end, are hashed.  Each query position that hits the
+    hash increments the count; with ``non_overlapping`` the scan then skips
+    ``word_size`` positions (R's exact behaviour).
+
+    Args:
+        seqs: Sequences (any type accepted by ``get_sequences``) or a list
+            of str/bytes.
+        ref: Reference sequence.
+        word_size: Kmer length (<= 32).
+        non_overlapping: Skip ahead after each hit.
+
+    Returns:
+        Integer numpy array of per-sequence hit counts.
+    """
+    import ctypes as ct
+    from . import _cdada
+
+    if isinstance(seqs, (str, bytes)):
+        seqs = [seqs]
+    if not isinstance(seqs, list) or (seqs and not isinstance(seqs[0], (str, bytes))):
+        seqs = get_sequences(seqs)
+    n = len(seqs)
+    counts = np.zeros(n, dtype=np.int32)
+    if n == 0:
+        return counts
+
+    parts = [s.encode("ascii") if isinstance(s, str) else s for s in seqs]
+    offsets = np.zeros(n + 1, dtype=np.int64)
+    np.cumsum([len(p) for p in parts], out=offsets[1:])
+    concat = b"".join(parts)
+
+    _cdada._lib.dada2_match_ref_counts(
+        concat,
+        offsets.ctypes.data_as(ct.POINTER(ct.c_int64)),
+        ct.c_int(n),
+        ref.encode("ascii") if isinstance(ref, str) else ref,
+        ct.c_int(word_size),
+        ct.c_int(int(non_overlapping)),
+        counts.ctypes.data_as(ct.POINTER(ct.c_int32)),
+    )
+    return counts
+
+
 def is_phix(
     seqs,
     ref_path: Optional[str] = None,
     word_size: int = 16,
     min_matches: int = 2,
+    non_overlapping: bool = True,
 ) -> np.ndarray:
-    """Check sequences against the PhiX genome using kmer matching.
+    """Check sequences against the PhiX genome (port of R's isPhiX).
 
-    For each query sequence, kmers of size ``word_size`` are extracted and
-    compared to the PhiX reference (forward and reverse complement).  A
-    sequence is flagged as PhiX if at least ``min_matches`` kmers hit.
+    Kmers of each query are matched against the full circular PhiX genome
+    and, separately, its reverse complement; a sequence is flagged when
+    either strand accumulates at least ``min_matches`` hits.
 
     Args:
         seqs: Sequences to check (any type accepted by ``get_sequences``).
-        ref_path: Path to a FASTA file containing the PhiX genome.  If None,
-            a built-in 100 bp snippet is used for matching.
+        ref_path: Path to a FASTA reference.  Default: the PhiX genome
+            shipped with the package (identical to R dada2's).
         word_size: Kmer size for matching.
-        min_matches: Minimum number of kmer hits to call PhiX.
+        min_matches: Minimum kmer hits on a single strand to call PhiX.
+        non_overlapping: Count non-overlapping hits (R default).
 
     Returns:
         A boolean numpy array, True where a sequence matches PhiX.
     """
-    seqs = get_sequences(seqs)
+    if isinstance(seqs, (str, bytes)):
+        seqs = [seqs]
+    if not isinstance(seqs, list) or (seqs and not isinstance(seqs[0], (str, bytes))):
+        seqs = get_sequences(seqs)
 
     if ref_path is not None:
         recs = _parse_fasta(ref_path)
-        phix_seq = "".join(seq for _, seq in recs).upper()
+        phix_seq = "".join(seq for _, seq in recs)
     else:
-        phix_seq = _PHIX_100BP.upper()
+        phix_seq = _phix_genome()
 
-    phix_rc = _rc(phix_seq)
-
-    # Build kmer sets for forward and RC PhiX
-    def _kmer_set(s, k):
-        return set(s[i:i+k] for i in range(len(s) - k + 1))
-
-    phix_kmers = _kmer_set(phix_seq, word_size)
-    phix_rc_kmers = _kmer_set(phix_rc, word_size)
-    all_phix_kmers = phix_kmers | phix_rc_kmers
-
-    result = np.zeros(len(seqs), dtype=bool)
-    for i, seq in enumerate(seqs):
-        seq = seq.upper()
-        hits = 0
-        for j in range(len(seq) - word_size + 1):
-            kmer = seq[j:j + word_size]
-            if kmer in all_phix_kmers:
-                hits += 1
-                if hits >= min_matches:
-                    break
-        result[i] = hits >= min_matches
-
-    return result
+    hits = match_ref(seqs, phix_seq, word_size=word_size,
+                     non_overlapping=non_overlapping)
+    hits_rc = match_ref(seqs, _rc(phix_seq), word_size=word_size,
+                        non_overlapping=non_overlapping)
+    return (hits >= min_matches) | (hits_rc >= min_matches)
 
 
 # ---------------------------------------------------------------------------

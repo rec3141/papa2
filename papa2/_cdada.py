@@ -89,10 +89,20 @@ def run_dada(seqs, abundances, err_mat, quals=None, priors=None,
         err_mat: numpy array (16, ncol), error rate matrix, row-major
         quals: numpy array (nraw, maxlen) of avg quality scores, or None
         priors: array-like of int (0/1), or None
+        multithread: True = all cores, False = single-threaded, or an int
+            thread count for the within-sample OpenMP comparison loop
 
     Returns:
         dict with keys: cluster_seqs, cluster_abunds, trans, map, pval, etc.
     """
+    # Map multithread to an OpenMP thread count: <=0 means all cores.
+    if multithread is True:
+        nthreads = 0
+    elif multithread is False or multithread is None:
+        nthreads = 1
+    else:
+        nthreads = int(multithread)
+
     nraw = len(seqs)
     if nraw == 0:
         return {"cluster_seqs": [], "cluster_abunds": np.array([], dtype=np.int32),
@@ -142,7 +152,7 @@ def run_dada(seqs, abundances, err_mat, quals=None, priors=None,
         ct.c_double(min_fold), ct.c_int(min_hamming), ct.c_int(min_abund),
         ct.c_int(int(use_quals)), ct.c_int(int(vectorized_alignment)),
         ct.c_int(homo_gap_pen),
-        ct.c_int(int(multithread)), ct.c_int(int(verbose)),
+        ct.c_int(nthreads), ct.c_int(int(verbose)),
         ct.c_int(sse), ct.c_int(int(gapless)), ct.c_int(int(greedy)),
     )
 
@@ -170,6 +180,34 @@ def run_dada(seqs, abundances, err_mat, quals=None, priors=None,
 
 
 # =========================================================================
+# Reference kmer matching (filtering helpers)
+# =========================================================================
+
+_lib.dada2_match_ref_counts.restype = None
+_lib.dada2_match_ref_counts.argtypes = [
+    ct.c_char_p,               # concat
+    ct.POINTER(ct.c_int64),    # offsets (nseq+1)
+    ct.c_int,                  # nseq
+    ct.c_char_p,               # ref
+    ct.c_int,                  # word_size
+    ct.c_int,                  # non_overlapping
+    ct.POINTER(ct.c_int32),    # out counts
+]
+
+_lib.dada2_match_ref_windows.restype = None
+_lib.dada2_match_ref_windows.argtypes = [
+    ct.c_char_p,               # buf
+    ct.POINTER(ct.c_int64),    # starts
+    ct.POINTER(ct.c_int64),    # ends
+    ct.c_int,                  # nseq
+    ct.c_char_p,               # ref
+    ct.c_int,                  # word_size
+    ct.c_int,                  # non_overlapping
+    ct.POINTER(ct.c_int32),    # out counts
+]
+
+
+# =========================================================================
 # Taxonomy assignment
 # =========================================================================
 
@@ -193,6 +231,7 @@ _lib.dada2_assign_taxonomy.argtypes = [
     ct.c_int,                  # ngenus
     ct.c_int,                  # nlevel
     ct.c_int,                  # verbose
+    ct.c_longlong,             # seed (>=0: R-compatible stream; <0: nondeterministic)
 ]
 
 _lib.dada2_tax_result_free.restype = None
@@ -311,7 +350,8 @@ def rc(seq):
     return result
 
 
-def run_taxonomy(seqs, refs, ref_to_genus, genusmat, ngenus, nlevel, verbose=True):
+def run_taxonomy(seqs, refs, ref_to_genus, genusmat, ngenus, nlevel, verbose=True,
+                 seed=None):
     """Run dada2 taxonomy assignment via C library.
 
     Args:
@@ -322,6 +362,10 @@ def run_taxonomy(seqs, refs, ref_to_genus, genusmat, ngenus, nlevel, verbose=Tru
         ngenus: int
         nlevel: int
         verbose: bool
+        seed: int or None.  With an integer seed, bootstrap subsampling uses
+            R's RNG stream, so results match an R session that ran
+            set.seed(seed) before assignTaxonomy().  None draws a
+            nondeterministic seed (R's tie-breaking behaviour).
 
     Returns:
         dict with:
@@ -352,7 +396,8 @@ def run_taxonomy(seqs, refs, ref_to_genus, genusmat, ngenus, nlevel, verbose=Tru
         rtg.ctypes.data_as(ct.POINTER(ct.c_int)),
         gmat.ctypes.data_as(ct.POINTER(ct.c_int)),
         ngenus, nlevel,
-        ct.c_int(int(verbose))
+        ct.c_int(int(verbose)),
+        ct.c_longlong(-1 if seed is None else int(seed)),
     )
 
     if not res_ptr:
@@ -389,6 +434,51 @@ _lib.dada2_is_bimera.argtypes = [
     ct.c_int,                   # min_one_off_par_dist
     ct.c_int, ct.c_int, ct.c_int, ct.c_int,  # match, mismatch, gap_p, max_shift
 ]
+
+_lib.dada2_is_bimera_denovo_batch.restype = None
+_lib.dada2_is_bimera_denovo_batch.argtypes = [
+    ct.POINTER(ct.c_char_p),   # seqs
+    ct.POINTER(ct.c_int),      # abunds
+    ct.c_int,                  # n
+    ct.c_double,               # min_fold
+    ct.c_int,                  # min_abund
+    ct.c_int,                  # allow_one_off
+    ct.c_int,                  # min_one_off_par_dist
+    ct.c_int, ct.c_int, ct.c_int, ct.c_int,  # match, mismatch, gap_p, max_shift
+    ct.POINTER(ct.c_int),      # out flags
+]
+
+
+def is_bimera_denovo_batch(seqs, abunds, min_fold=2, min_abund=8,
+                           allow_one_off=False, min_one_off_par_dist=4,
+                           match=5, mismatch=-4, gap_p=-8, max_shift=16):
+    """R's isBimeraDenovo over one abundance vector, OpenMP-parallel in C.
+
+    For each sequence, parents are those with abundance strictly greater
+    than min_fold * its abundance AND strictly greater than min_abund
+    (input order); sequences with fewer than two parents are not chimeric.
+
+    Returns a boolean numpy array.
+    """
+    n = len(seqs)
+    if n == 0:
+        return np.zeros(0, dtype=bool)
+    seq_arr = (ct.c_char_p * n)()
+    for i, s in enumerate(seqs):
+        seq_arr[i] = s.encode("ascii") if isinstance(s, str) else s
+    ab = np.ascontiguousarray(abunds, dtype=np.int32)
+    flags = np.zeros(n, dtype=np.int32)
+    _lib.dada2_is_bimera_denovo_batch(
+        seq_arr,
+        ab.ctypes.data_as(ct.POINTER(ct.c_int)),
+        ct.c_int(n),
+        ct.c_double(min_fold), ct.c_int(min_abund),
+        ct.c_int(int(allow_one_off)), ct.c_int(min_one_off_par_dist),
+        ct.c_int(match), ct.c_int(mismatch), ct.c_int(gap_p), ct.c_int(max_shift),
+        flags.ctypes.data_as(ct.POINTER(ct.c_int)),
+    )
+    return flags.astype(bool)
+
 
 _lib.dada2_table_bimera.restype = ct.POINTER(ChimeraResult)
 _lib.dada2_table_bimera.argtypes = [
