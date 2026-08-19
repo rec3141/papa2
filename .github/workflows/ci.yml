@@ -28,15 +28,17 @@ jobs:
       # ------------------------------------------------------------------ #
       # System-level build dependencies
       # ------------------------------------------------------------------ #
+      # gcc/g++/make/zlib1g-dev ship preinstalled on ubuntu-latest images;
+      # this step only tops them up and must never hang the job on a flaky
+      # apt mirror (which has stalled runs for 30+ minutes).
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            g++ \
-            gcc \
-            zlib1g-dev \
-            make
+          timeout 180 sudo apt-get update -qq && \
+          timeout 180 sudo apt-get install -y --no-install-recommends \
+            g++ gcc zlib1g-dev make \
+          || echo "apt unavailable; relying on preinstalled toolchain"
+          g++ --version && make --version | head -1
 
       # ------------------------------------------------------------------ #
       # Compile shared library
