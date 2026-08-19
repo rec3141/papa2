@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["bioinformatics", "amplicon", "denoising", "dada2", "metagenomics", "microbiome"]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Science/Research",
   "Topic :: Scientific/Engineering :: Bio-Informatics",
   "Topic :: Scientific/Engineering",
