@@ -296,7 +296,11 @@ def dada(derep, err=None, error_estimation_function=None, self_consist=False,
     cores = int(os.environ.get("DADA2_CORES", "0")) or (os.cpu_count() or 1)
     n_workers = int(os.environ.get("DADA2_WORKERS", "0"))
     if n_workers == 0:
-        n_workers = min(len(derep), cores)
+        # Cap workers at cores/4 so each keeps >= 4 OpenMP threads: on
+        # heavy samples the comparison loop scales well and a wide pool
+        # of single-threaded workers loses to stragglers, while on many
+        # small samples the two layouts measure the same.
+        n_workers = min(len(derep), max(1, cores // 4))
     omp_threads = int(os.environ.get("DADA2_OMP_THREADS", "0"))
     if omp_threads == 0:
         omp_threads = max(1, cores // max(1, min(n_workers, len(derep))))
