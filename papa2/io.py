@@ -169,3 +169,56 @@ def derep_fastq(filepath, verbose=False, with_map=False, multithread=True):
         "quals": sorted_quals,
         "map": rmap,
     }
+
+
+def combine_dereps(dereps):
+    """Combine multiple derep results into one pooled derep.
+
+    Exact port of R's dada2:::combineDereps2: unique sequences keep
+    first-appearance order across samples, counts are summed, quality
+    profiles are abundance-weighted means accumulated in sample order,
+    the combined uniques are re-sorted by decreasing abundance (stable,
+    like R's order()), and the concatenated per-read map is remapped
+    accordingly.
+    """
+    if isinstance(dereps, dict):
+        dereps = [dereps]
+    maxlen = max(d["quals"].shape[1] for d in dereps)
+
+    seq_index = {}
+    seqs_all = []
+    for d in dereps:
+        for sq in d["seqs"]:
+            if sq not in seq_index:
+                seq_index[sq] = len(seqs_all)
+                seqs_all.append(sq)
+    n = len(seqs_all)
+
+    counts = np.zeros(n, dtype=np.int64)
+    qual_sums = np.zeros((n, maxlen), dtype=np.float64)
+    maps = []
+    for d in dereps:
+        idx = np.fromiter((seq_index[sq] for sq in d["seqs"]),
+                          dtype=np.int64, count=len(d["seqs"]))
+        ab = np.asarray(d["abundances"], dtype=np.int64)
+        counts[idx] += ab
+        q = d["quals"]
+        if q.shape[1] < maxlen:
+            pad = np.full((q.shape[0], maxlen - q.shape[1]), np.nan)
+            q = np.hstack([q, pad])
+        qual_sums[idx] += q * ab[:, None]
+        maps.append(idx[np.asarray(d["map"], dtype=np.int64)])
+
+    quals = qual_sums / counts[:, None]
+
+    order = np.argsort(-counts, kind="stable")
+    inv = np.empty(n, dtype=np.int64)
+    inv[order] = np.arange(n, dtype=np.int64)
+    combined_map = inv[np.concatenate(maps)] if maps else np.zeros(0, np.int64)
+
+    return {
+        "seqs": [seqs_all[i] for i in order],
+        "abundances": counts[order].astype(np.int32),
+        "quals": quals[order],
+        "map": combined_map.astype(np.int32),
+    }
