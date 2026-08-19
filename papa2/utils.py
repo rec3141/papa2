@@ -586,12 +586,13 @@ def make_sequence_table(
     Args:
         samples_dict: ``{sample_name: {sequence: abundance}}``.
         order_by: How to order the columns.  ``"abundance"`` (default) sorts
-            by total abundance across all samples (descending).
-            ``"nsamples"`` sorts by number of samples in which the sequence
-            appears.  ``None`` for no ordering.
+            by total abundance across all samples (descending, stable —
+            matching R).  ``"nsamples"`` sorts by number of samples in
+            which the sequence appears.  ``None`` for no ordering.
 
     Returns:
-        A pandas DataFrame with samples as rows and sequences as columns.
+        dict with keys ``"table"`` (numpy int array, samples x sequences),
+        ``"seqs"`` (column sequences) and ``"sample_names"`` (row names).
     """
     import pandas as pd
 
