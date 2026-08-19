@@ -48,7 +48,8 @@ def _rc(seq: str) -> str:
         from . import rc as _c_rc
         return _c_rc(seq)
     except Exception:
-        comp = str.maketrans("ACGTacgt", "TGCAtgca")
+        comp = str.maketrans("ACGTRYSWKMBDHVNacgtryswkmbdhvn",
+                             "TGCAYRSWMKVHDBNtgcayrswmkvhdbn")
         return seq.translate(comp)[::-1]
 
 
@@ -1944,166 +1945,216 @@ def plot_complexity(
 # remove_primers -- match and trim primer sequences from reads
 # ---------------------------------------------------------------------------
 
-def _hamming_match(seq_region: str, primer: str, max_mismatch: int) -> bool:
-    """Check if seq_region matches primer with at most max_mismatch mismatches.
+# IUPAC nucleotide code -> set of bases, for degenerate primer matching
+_IUPAC = {
+    "A": "A", "C": "C", "G": "G", "T": "T",
+    "R": "AG", "Y": "CT", "S": "CG", "W": "AT", "K": "GT", "M": "AC",
+    "B": "CGT", "D": "AGT", "H": "ACT", "V": "ACG", "N": "ACGT",
+}
 
-    Both strings must be the same length.
+
+def _iupac_match_table(fixed: bool) -> np.ndarray:
+    """256x256 bool table: does primer byte p match read byte r?
+
+    fixed=True: exact byte equality (Biostrings fixed=TRUE).
+    fixed=False: IUPAC set intersection on both sides (fixed=FALSE).
+    Case-insensitive, like Biostrings' DNAString comparisons.
     """
-    if len(seq_region) != len(primer):
-        return False
-    mismatches = 0
-    for a, b in zip(seq_region, primer):
-        if a != b:
-            mismatches += 1
-            if mismatches > max_mismatch:
-                return False
-    return True
+    tab = np.zeros((256, 256), dtype=bool)
+    if fixed:
+        for c in "ACGT":
+            for a in (c, c.lower()):
+                for b in (c, c.lower()):
+                    tab[ord(a), ord(b)] = True
+    else:
+        for p, pset in _IUPAC.items():
+            for r, rset in _IUPAC.items():
+                if set(pset) & set(rset):
+                    for a in (p, p.lower()):
+                        for b in (r, r.lower()):
+                            tab[ord(a), ord(b)] = True
+    return tab
+
+
+def _primer_hits(smat: np.ndarray, widths: np.ndarray, primer: bytes,
+                 max_mismatch: int, want: str) -> np.ndarray:
+    """Locate primer matches in each read (Biostrings vmatchPattern,
+    with.indels=FALSE semantics).
+
+    smat: (n, L) uint8 matrix of read bytes, 0-padded past each width.
+    want: "first" returns the leftmost match start, "last" the rightmost;
+    -1 when there is no match.  Starts are 0-based.
+    """
+    n, L = smat.shape
+    plen = len(primer)
+    fixed = all(chr(b).upper() in "ACGT" for b in primer)
+    tab = _iupac_match_table(fixed)
+    prim = np.frombuffer(primer, dtype=np.uint8)
+
+    out = np.full(n, -1, dtype=np.int64)
+    if L < plen:
+        return out
+    n_off = L - plen + 1
+    # mismatch counts per (read, offset)
+    mm = np.zeros((n, n_off), dtype=np.int16)
+    for p in range(plen):
+        mm += ~tab[prim[p]][smat[:, p:p + n_off]]
+    # a match must lie fully within the read
+    off_ok = np.arange(n_off)[None, :] <= (widths[:, None] - plen)
+    hit = (mm <= max_mismatch) & off_ok
+    any_hit = hit.any(axis=1)
+    if want == "first":
+        out[any_hit] = hit.argmax(axis=1)[any_hit]
+    else:
+        out[any_hit] = (n_off - 1) - hit[:, ::-1].argmax(axis=1)[any_hit]
+    return out
 
 
 def remove_primers(
-    fn: str,
-    fout: str,
+    fn,
+    fout,
     primer_fwd: str,
     primer_rev: Optional[str] = None,
     max_mismatch: int = 2,
+    allow_indels: bool = False,
     trim_fwd: bool = True,
     trim_rev: bool = True,
     orient: bool = True,
     compress: bool = True,
     verbose: bool = False,
-) -> Tuple[int, int]:
-    """Match and trim primer sequences from FASTQ reads.
+):
+    """Remove primers from reads and orient them (port of R's removePrimers).
 
-    Reads the input FASTQ file, matches the forward primer at the start
-    of each read and the reverse-complement of the reverse primer at
-    the end.  Reads that match are trimmed (if ``trim_fwd`` / ``trim_rev``)
-    and written to the output file.
-
-    If ``orient=True``, reads that don't match in forward orientation
-    are checked in reverse-complement and flipped if they match.
+    The forward primer is matched anywhere in each read (Biostrings
+    vmatchPattern semantics: mismatches only, IUPAC degenerate codes in
+    the primer match their base sets).  Reads without a forward-primer
+    match are dropped; with ``orient``, reads whose reverse complement
+    matches are reverse-complemented first.  ``primer_rev`` (as it would
+    appear at the end of the read, i.e. already complemented) is
+    required to match when provided.  ``trim_fwd`` trims through the end
+    of the forward match, ``trim_rev`` trims from the start of the
+    reverse match; reads must retain at least two bases (R's strict
+    ``last > first``).
 
     Args:
-        fn: Input FASTQ file path (may be gzipped).
-        fout: Output FASTQ file path.
-        primer_fwd: Forward primer sequence (5' to 3').
-        primer_rev: Reverse primer sequence (5' to 3'), optional.
-            Its reverse complement is matched at the 3' end of reads.
-        max_mismatch: Maximum allowed mismatches per primer match.
-        trim_fwd: If True, trim the matched forward primer region.
-        trim_rev: If True, trim the matched reverse primer region.
-        orient: If True, check reverse complement of reads and flip
-            if primers match in that orientation.
-        compress: If True and output path ends with ``.gz``, gzip-compress
-            the output.
-        verbose: If True, log progress and match statistics.
+        fn: Input FASTQ path(s).
+        fout: Output FASTQ path(s), same length as ``fn``.
+        primer_fwd: Forward primer (may contain IUPAC codes).
+        primer_rev: Reverse primer as it appears at the read's end.
+        max_mismatch: Maximum mismatching positions in a primer match.
+        allow_indels: R supports indel-tolerant matching; not yet
+            implemented here.
+        trim_fwd / trim_rev: Trim the matched primer(s) off.
+        orient: Try the reverse complement of unmatched reads.
+        compress: Gzip the output.
+        verbose: Print per-file summaries.
 
     Returns:
-        Tuple ``(reads_in, reads_out)`` with the number of reads read
-        and the number of reads written.
+        ``(reads_in, reads_out)`` for a single file, or an int array of
+        shape ``(n_files, 2)`` for multiple files.
     """
-    primer_fwd = primer_fwd.upper()
-    len_fwd = len(primer_fwd)
+    from .filter import (_FastqChunkReader, _GzipRecordWriter, _ReadBatch,
+                         _decode_windows, _rc_bytes)
 
-    if primer_rev is not None:
-        primer_rev = primer_rev.upper()
-        primer_rev_rc = _rc(primer_rev)
-        len_rev_rc = len(primer_rev_rc)
-    else:
-        primer_rev_rc = None
-        len_rev_rc = 0
+    if allow_indels:
+        raise NotImplementedError(
+            "allow_indels=True (R's matchPattern with.indels) is not yet "
+            "implemented; R's default allow.indels=FALSE is.")
 
-    reads_in = 0
-    reads_out = 0
+    single = isinstance(fn, str)
+    fns = [fn] if single else list(fn)
+    fouts = [fout] if isinstance(fout, str) else list(fout)
+    if len(fns) != len(fouts):
+        raise ValueError("Every input file must have a corresponding "
+                         "output file.")
 
-    opener_in = gzip.open if fn.endswith(".gz") else open
-    if compress and fout.endswith(".gz"):
-        opener_out = gzip.open
-        mode_out = "wt"
-    else:
-        opener_out = open
-        mode_out = "w"
+    p_fwd = primer_fwd.encode("ascii")
+    p_rev = primer_rev.encode("ascii") if primer_rev is not None else None
 
-    with opener_in(fn, "rt") as fh_in, opener_out(fout, mode_out) as fh_out:
-        while True:
-            header = fh_in.readline()
-            if not header:
-                break
-            seq = fh_in.readline().rstrip("\n\r")
-            plus = fh_in.readline()
-            qual = fh_in.readline().rstrip("\n\r")
-            if not seq:
-                break
-
-            reads_in += 1
-            seq_upper = seq.upper()
-            matched = False
-            is_rc = False
-
-            # Try forward orientation
-            fwd_ok = False
-            rev_ok = False
-
-            if len(seq_upper) >= len_fwd:
-                fwd_ok = _hamming_match(seq_upper[:len_fwd], primer_fwd, max_mismatch)
-
-            if primer_rev_rc is not None and len(seq_upper) >= len_rev_rc:
-                rev_ok = _hamming_match(
-                    seq_upper[len(seq_upper) - len_rev_rc:],
-                    primer_rev_rc, max_mismatch,
-                )
-            elif primer_rev_rc is None:
-                rev_ok = True  # No reverse primer to check
-
-            if fwd_ok and rev_ok:
-                matched = True
-            elif orient and not matched:
-                # Try reverse complement
-                seq_rc = _rc(seq_upper)
-                qual_rc = qual[::-1]
-
-                fwd_ok_rc = False
-                rev_ok_rc = False
-
-                if len(seq_rc) >= len_fwd:
-                    fwd_ok_rc = _hamming_match(seq_rc[:len_fwd], primer_fwd, max_mismatch)
-
-                if primer_rev_rc is not None and len(seq_rc) >= len_rev_rc:
-                    rev_ok_rc = _hamming_match(
-                        seq_rc[len(seq_rc) - len_rev_rc:],
-                        primer_rev_rc, max_mismatch,
-                    )
-                elif primer_rev_rc is None:
-                    rev_ok_rc = True
-
-                if fwd_ok_rc and rev_ok_rc:
-                    matched = True
-                    is_rc = True
-                    seq = seq_rc
-                    qual = qual_rc
-
-            if not matched:
+    results = np.zeros((len(fns), 2), dtype=np.int64)
+    for i, (f_in, f_out) in enumerate(zip(fns, fouts)):
+        # R's readFastq loads the whole file; a single chunk mirrors that.
+        reads = []
+        for buf, ls, le in _FastqChunkReader(f_in, 1 << 62):
+            batch = _ReadBatch(buf, ls, le)
+            for j in range(batch.n):
+                sq, ql = batch.get_seq_qual(j)
+                reads.append((batch.get_header(j), sq, ql))
+        n = len(reads)
+        results[i, 0] = n
+        writer = _GzipRecordWriter(f_out, compress)
+        try:
+            if n == 0:
                 continue
+            widths = np.fromiter((len(r[1]) for r in reads), np.int64, n)
+            L = int(widths.max())
+            smat = np.zeros((n, L), dtype=np.uint8)
+            for j, (_, sq, _) in enumerate(reads):
+                smat[j, :len(sq)] = np.frombuffer(sq, dtype=np.uint8)
 
-            # Trim primers
-            start = len_fwd if (trim_fwd and fwd_ok) or (trim_fwd and is_rc and fwd_ok_rc) else 0
-            end = len(seq) - len_rev_rc if (trim_rev and primer_rev_rc is not None) else len(seq)
-            if end <= start:
-                continue
+            first_fwd = _primer_hits(smat, widths, p_fwd, max_mismatch, "first")
+            last_rev = (_primer_hits(smat, widths, p_rev, max_mismatch, "last")
+                        if p_rev is not None else None)
 
-            seq_out = seq[start:end]
-            qual_out = qual[start:end]
+            flipped = np.zeros(n, dtype=bool)
+            if orient:
+                # Match against the reverse complements, flip reads with a
+                # fwd hit only there.
+                rc_seqs = [_rc_bytes(r[1]) for r in reads]
+                smat_rc = np.zeros((n, L), dtype=np.uint8)
+                for j, sq in enumerate(rc_seqs):
+                    smat_rc[j, :len(sq)] = np.frombuffer(sq, dtype=np.uint8)
+                fwd_rc = _primer_hits(smat_rc, widths, p_fwd, max_mismatch,
+                                      "first")
+                flipped = (first_fwd < 0) & (fwd_rc >= 0)
+                if flipped.any():
+                    if verbose:
+                        print(f"{int(flipped.sum())} sequences out of {n} "
+                              f"are being reverse-complemented.")
+                    first_fwd[flipped] = fwd_rc[flipped]
+                    if p_rev is not None:
+                        rev_rc = _primer_hits(smat_rc, widths, p_rev,
+                                              max_mismatch, "last")
+                        last_rev[flipped] = rev_rc[flipped]
 
-            fh_out.write(header)
-            fh_out.write(seq_out + "\n")
-            fh_out.write("+\n")
-            fh_out.write(qual_out + "\n")
-            reads_out += 1
+            keep = first_fwd >= 0
+            if p_rev is not None:
+                keep &= last_rev >= 0
 
-    if verbose:
-        logger.info(
-            "[INFO] remove_primers: %d reads in, %d reads out (%.1f%% matched).",
-            reads_in, reads_out,
-            100.0 * reads_out / reads_in if reads_in > 0 else 0.0,
-        )
+            plen_f = len(p_fwd)
+            # R (1-based): first = end(fwd)+1, last = start(rev)-1,
+            # keep last > first.  In 0-based half-open coordinates:
+            starts = (first_fwd + plen_f) if trim_fwd else np.zeros(n, np.int64)
+            if p_rev is not None and trim_rev:
+                ends = last_rev.copy()
+            else:
+                ends = widths.copy()
+            keep &= (ends - starts) >= 2
 
-    return reads_in, reads_out
+            out_parts = []
+            n_out = 0
+            for j in np.flatnonzero(keep):
+                hdr, sq, ql = reads[j]
+                if flipped[j]:
+                    sq = _rc_bytes(sq)
+                    ql = ql[::-1]
+                a, b = int(starts[j]), int(ends[j])
+                out_parts += [hdr, b"\n", sq[a:b], b"\n+\n", ql[a:b], b"\n"]
+                n_out += 1
+            if out_parts:
+                writer.write(b"".join(out_parts))
+            results[i, 1] = n_out
+        finally:
+            writer.close()
+        if verbose:
+            r_in, r_out = int(results[i, 0]), int(results[i, 1])
+            pct = 100.0 * r_out / r_in if r_in else 0.0
+            print(f"Read in {r_in} reads, output {r_out} ({pct:.1f}%) "
+                  f"primer-removed reads.")
+
+    if results[:, 1].sum() == 0:
+        print("Warning: No reads passed the primer detection.")
+
+    if single:
+        return int(results[0, 0]), int(results[0, 1])
+    return results

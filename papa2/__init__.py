@@ -1,9 +1,9 @@
 """papa2 Python bindings."""
 
 from .dada import dada, learn_errors, DADA_OPTS, set_dada_opt, get_dada_opt
-from .io import derep_fastq
+from .io import combine_dereps, derep_fastq
 from .error import loess_errfun, noqual_errfun, inflate_err, pacbio_errfun, make_binned_qual_errfun
-from ._cdada import nwalign, eval_pair, pair_consensus, rc
+from ._cdada import nwalign, eval_pair, pair_consensus, rc, set_num_threads
 from .paired import merge_pairs
 from .chimera import remove_bimera_denovo
 from .filter import filter_and_trim, fastq_filter, fastq_paired_filter
@@ -19,6 +19,7 @@ from .utils import (
     uniquesto_fasta,
     write_fasta,
     is_phix,
+    match_ref,
     seq_complexity,
     get_sequences,
     get_uniques,

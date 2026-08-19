@@ -17,7 +17,7 @@ def test_file_inputs_stream_derep_and_denoise(monkeypatch):
         }
 
     def fake_run_one_sample(args):
-        drp, erri, opts, max_clust, verbose, nthreads = args
+        drp, erri, opts, max_clust, verbose, nthreads, prior_seqs = args
         calls.append(("run", tuple(drp["seqs"])))
         return {
             "cluster_seqs": ["ACGT"],

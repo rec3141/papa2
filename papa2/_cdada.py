@@ -179,6 +179,22 @@ def run_dada(seqs, abundances, err_mat, quals=None, priors=None,
     return result
 
 
+_lib.dada2_set_omp_threads.restype = None
+_lib.dada2_set_omp_threads.argtypes = [ct.c_int]
+
+
+def set_num_threads(n):
+    """Set the default OpenMP thread count for papa2's parallel C code
+    (chimera tables, taxonomy, PhiX matching, within-sample denoising).
+
+    Setting the OMP_NUM_THREADS environment variable after papa2 has been
+    imported has no effect — libgomp reads it at load time — so callers
+    running under a CPU allocation (containers, schedulers) should call
+    this instead.
+    """
+    _lib.dada2_set_omp_threads(ct.c_int(int(n)))
+
+
 # =========================================================================
 # Reference kmer matching (filtering helpers)
 # =========================================================================

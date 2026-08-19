@@ -44,12 +44,45 @@ from .utils import seq_complexity as _seq_complexity
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-# Expected-error lookup by raw quality byte: lut[b] = 10^(-(b-33)/10).
-# Index 0 (used for padding) contributes exactly 0.0, so padded positions
-# do not perturb the sequential left-to-right sum (matching R's C_matrixEE,
-# which stops at the end of each read).
-_EE_LUT = np.zeros(256, dtype=np.float64)
-_EE_LUT[33:127] = 10.0 ** (-(np.arange(33, 127, dtype=np.float64) - 33.0) / 10.0)
+# Expected-error lookup by raw quality byte and encoding offset:
+# lut[b] = 10^(-(b-offset)/10).  Index 0 (used for padding) contributes
+# exactly 0.0, so padded positions do not perturb the sequential
+# left-to-right sum (matching R's C_matrixEE, which stops at the end of
+# each read).
+def _make_ee_lut(offset):
+    lut = np.zeros(256, dtype=np.float64)
+    lut[33:127] = 10.0 ** (-(np.arange(33, 127, dtype=np.float64) - offset) / 10.0)
+    return lut
+
+_EE_LUTS = {33: _make_ee_lut(33.0), 64: _make_ee_lut(64.0)}
+_EE_LUT = _EE_LUTS[33]
+
+
+def _detect_quality_offset(batch, quality_type):
+    """Quality encoding offset for one chunk of reads.
+
+    "Auto" reproduces ShortRead's .qualityTypeAuto: over the first 10,000
+    reads of the chunk, Phred+64 (SFastqQuality) iff the smallest quality
+    byte is >= 59 (';') and the largest is >= 75 ('K'); Phred+33
+    (FastqQuality) otherwise.
+    """
+    if quality_type == "FastqQuality":
+        return 33
+    if quality_type in ("SFastqQuality", "SolexaQuality"):
+        return 64
+    if quality_type != "Auto":
+        raise ValueError(f"Unknown quality_type: {quality_type!r}")
+    arr = np.frombuffer(batch.buf, dtype=np.uint8)
+    n = min(batch.n, 10000)
+    lo, hi = 255, 0
+    for i in range(n):
+        q = arr[batch.qual_s[i]:batch.qual_e[i]]
+        if len(q):
+            lo = min(lo, int(q.min()))
+            hi = max(hi, int(q.max()))
+    if hi and lo >= 59 and hi >= 75:
+        return 64
+    return 33
 
 # Non-ACGT indicator by sequence byte (case-insensitive, matching R's
 # alphabetFrequency(baseOnly=TRUE)[,"other"]).
@@ -57,7 +90,8 @@ _IS_OTHER = np.ones(256, dtype=bool)
 for _b in b"ACGTacgt":
     _IS_OTHER[_b] = False
 
-_RC_TABLE = bytes.maketrans(b"ACGTacgt", b"TGCAtgca")
+_RC_TABLE = bytes.maketrans(b"ACGTRYSWKMBDHVNacgtryswkmbdhvn",
+                            b"TGCAYRSWMKVHDBNtgcayrswmkvhdbn")
 
 
 def _rc_bytes(seq: bytes) -> bytes:
@@ -238,6 +272,23 @@ class _ReadBatch:
         # (seq_s/seq_e) is interpreted relative to that origin.
         self.override = {}  # read index -> (seq bytes, qual bytes, orig_s)
 
+    def subset_(self, idx):
+        """Keep only the given record indices (used by match_ids)."""
+        for name in ("head_s", "head_e", "seq_s", "seq_e", "qual_s", "qual_e"):
+            setattr(self, name, getattr(self, name)[idx])
+        self.n = len(idx)
+        if self.override:
+            remap = {int(old): new for new, old in enumerate(idx)}
+            self.override = {remap[i]: v for i, v in self.override.items()
+                             if i in remap}
+
+    def record_bytes(self, i):
+        """Raw bytes of record i (four lines, normalised newlines)."""
+        return b"%s\n%s\n+\n%s\n" % (
+            self.buf[self.head_s[i]:self.head_e[i]],
+            self.buf[self.seq_s[i]:self.seq_e[i]],
+            self.buf[self.qual_s[i]:self.qual_e[i]])
+
     def widths(self):
         return self.seq_e - self.seq_s
 
@@ -323,6 +374,70 @@ class _ReadBatch:
                     break
 
 
+def _records_region(chunk):
+    """The byte region of a reader chunk that holds its complete records
+    (the raw buffer may also carry the beginning of the next record)."""
+    buf, ls, le = chunk
+    if len(le) == 0:
+        return b""
+    end = int(le[-1])
+    # step past an optional \r and the terminating \n
+    while end < len(buf):
+        b = buf[end]
+        end += 1
+        if b == 10:
+            break
+    return buf[:end]
+
+
+def _parse_chunk(buf):
+    """Line offsets (CR-stripped) for a buffer of complete FASTQ records."""
+    arr = np.frombuffer(buf, dtype=np.uint8)
+    nl = np.flatnonzero(arr == 10).astype(np.int64)
+    starts = np.empty(len(nl), dtype=np.int64)
+    if len(nl):
+        starts[0] = 0
+        starts[1:] = nl[:-1] + 1
+    ends = nl.copy()
+    cr = (ends > starts) & (arr[np.maximum(ends - 1, 0)] == 13)
+    ends[cr] -= 1
+    return buf, starts, ends
+
+
+def _detect_id_field(header, id_sep):
+    """R's CASAVA id-field detection: the single 6-colon field (current
+    format) or the single 4-colon field (old format) of the first id."""
+    import re
+    ident = header[1:] if header.startswith(b"@") else header
+    fields = re.split(id_sep, ident.decode("ascii", "replace"))
+    ncolon = [f.count(":") for f in fields]
+    if ncolon and max(ncolon) == 6 and ncolon.count(6) == 1:
+        return ncolon.index(6), "Current"
+    if ncolon and max(ncolon) == 4 and ncolon.count(4) == 1:
+        return ncolon.index(4), "Old"
+    raise ValueError("Couldn't automatically detect the sequence "
+                     "identifier field in the fastq id string.")
+
+
+def _extract_ids(batch, id_field, id_sep, strip_hash):
+    """Sequence identifiers for match_ids.  strip_hash reproduces R's
+    old-CASAVA handling, which strips the "#..." suffix from the FORWARD
+    ids only — R's exact (buggy) behaviour, kept for parity."""
+    import re
+    pat = re.compile(id_sep)
+    ids = []
+    for i in range(batch.n):
+        h = batch.buf[batch.head_s[i]:batch.head_e[i]]
+        if h.startswith(b"@"):
+            h = h[1:]
+        fields = pat.split(h.decode("ascii", "replace"))
+        ident = fields[id_field] if id_field < len(fields) else ""
+        if strip_hash:
+            ident = ident.split("#", 1)[0]
+        ids.append(ident)
+    return ids
+
+
 def _as_pair(val):
     """Normalise a scalar or length-2 sequence to a 2-tuple."""
     if isinstance(val, (list, tuple)):
@@ -374,7 +489,7 @@ def _complexity_low(batch: _ReadBatch, indices, threshold) -> np.ndarray:
     return _seq_complexity(seqs) < threshold
 
 
-def _ee_and_minq(batch: _ReadBatch, indices):
+def _ee_and_minq(batch: _ReadBatch, indices, offset=33):
     """Per-read expected errors (sequential left-to-right sum, matching
     C_matrixEE) and minimum quality score, for the given reads."""
     if len(indices) == 0:
@@ -384,8 +499,9 @@ def _ee_and_minq(batch: _ReadBatch, indices):
     if max_w == 0:
         return np.zeros(len(indices)), np.full(len(indices), np.inf)
     _, qmat, valid = batch.seq_matrix(indices, max_w)
-    ee = np.cumsum(_EE_LUT[qmat], axis=1)[:, -1]
-    q_int = np.where(valid, qmat.astype(np.int16) - 33, np.int16(32767))
+    ee = np.cumsum(_EE_LUTS[offset][qmat], axis=1)[:, -1]
+    q_int = np.where(valid, qmat.astype(np.int16) - np.int16(offset),
+                     np.int16(32767))
     minq = q_int.min(axis=1).astype(np.float64)
     minq[widths == 0] = np.inf
     return ee, minq
@@ -425,6 +541,7 @@ def fastq_filter(
     orient_fwd: Optional[str] = None,
     compress: bool = True,
     n: int = 1_000_000,
+    quality_type: str = "Auto",
     verbose: bool = False,
 ) -> Tuple[int, int]:
     """Filter and trim a single FASTQ file (mirrors R's fastqFilter).
@@ -465,13 +582,14 @@ def fastq_filter(
         n: Number of records processed per chunk (R's ``n``).  Output
             order within a chunk can depend on this when ``orient_fwd``
             is set.
+        quality_type: "Auto" (default; per-chunk detection matching
+            ShortRead), "FastqQuality" (Phred+33) or "SFastqQuality"
+            (Phred+64).
         verbose: Print a summary line when done.
 
     Returns:
         ``(reads_in, reads_out)``
     """
-    if trunc_q is not None and not (0 <= trunc_q <= 93):
-        raise ValueError("trunc_q must be within the Phred+33 range 0..93")
 
     reads_in = 0
     reads_out = 0
@@ -482,6 +600,9 @@ def fastq_filter(
     try:
         for buf, ls, le in _FastqChunkReader(fn, n):
             batch = _ReadBatch(buf, ls, le)
+            offset = _detect_quality_offset(batch, quality_type)
+            if trunc_q is not None and not (33 <= trunc_q + offset <= 126):
+                raise ValueError("Encoding for this trunc_q value not found.")
             reads_in += batch.n
             order = np.arange(batch.n)
             keep = np.ones(batch.n, dtype=bool)
@@ -527,7 +648,7 @@ def fastq_filter(
 
             # --- trunc_q ---
             if trunc_q is not None:
-                batch.truncq_cut_(trunc_q + 33, keep)
+                batch.truncq_cut_(trunc_q + offset, keep)
 
             # --- trunc_len ---
             if end_len is not None:
@@ -548,7 +669,7 @@ def fastq_filter(
             idx = order[keep[order]]
             if len(idx) and (max_ee < float("inf") or
                              (min_q > (trunc_q if trunc_q is not None else -1))):
-                ee, minq = _ee_and_minq(batch, idx)
+                ee, minq = _ee_and_minq(batch, idx, offset)
                 bad = np.zeros(len(idx), dtype=bool)
                 if min_q > (trunc_q if trunc_q is not None else -1) and min_q > 0:
                     bad |= ~(minq > min_q)
@@ -613,11 +734,21 @@ def fastq_paired_filter(
     rm_phix: Union[bool, Tuple[bool, bool]] = True,
     rm_lowcomplex: Union[float, Tuple[float, float]] = (0.0, 0.0),
     orient_fwd: Optional[str] = None,
+    match_ids: bool = False,
+    id_sep: str = r"\s",
+    id_field: Optional[int] = None,
     compress: bool = True,
     n: int = 1_000_000,
+    quality_type: str = "Auto",
     verbose: bool = False,
 ) -> Tuple[int, int]:
     """Filter and trim paired FASTQ files (mirrors R's fastqPairedFilter).
+
+    With ``match_ids`` (R's matchIDs), reads are re-paired by sequence
+    identifier: the id field (auto-detected CASAVA format, or
+    ``id_field``, 0-based) is compared between files, reads present in
+    only one file are dropped, and unmatched tails of each chunk carry
+    over to the next chunk exactly as in R.
 
     Both reads of a pair must pass all filters for the pair to be kept.
     Parameters accept scalars (applied to both) or ``(fwd, rev)`` tuples.
@@ -646,9 +777,7 @@ def fastq_paired_filter(
     mee = _as_pair(max_ee)
     rphix = _as_pair(rm_phix)
     rlc = _as_pair(rm_lowcomplex)
-    for q in tq:
-        if q is not None and not (0 <= q <= 93):
-            raise ValueError("trunc_q must be within the Phred+33 range 0..93")
+
 
     end_len = (
         _resolve_trunc_ends(int(tlen[0]), int(tl[0])),
@@ -664,23 +793,69 @@ def fastq_paired_filter(
     try:
         reader_f = _FastqChunkReader(fwd, n)
         reader_r = _FastqChunkReader(rev, n)
+        casava = "Undetermined"
+        idf = id_field
+        carry_f = b""
+        carry_r = b""
+        first_chunk = True
         while True:
             chunk_f = next(reader_f, None)
             chunk_r = next(reader_r, None)
             if chunk_f is None and chunk_r is None:
                 break
-            if chunk_f is None or chunk_r is None:
+            if not match_ids and (chunk_f is None or chunk_r is None):
                 raise ValueError(
                     f"Forward and reverse FASTQ files have different numbers "
                     f"of reads ({fwd}, {rev}). Files must be synchronized.")
-            bf = _ReadBatch(*chunk_f)
-            br = _ReadBatch(*chunk_r)
+            empty = (b"", np.zeros(0, np.int64), np.zeros(0, np.int64))
+            bf = _ReadBatch(*(chunk_f or empty))
+            br = _ReadBatch(*(chunk_r or empty))
+
+            if match_ids:
+                if first_chunk:
+                    if idf is None:
+                        if bf.n == 0:
+                            raise ValueError("Empty forward FASTQ file.")
+                        idf, casava = _detect_id_field(
+                            bytes(bf.buf[bf.head_s[0]:bf.head_e[0]]), id_sep)
+                else:
+                    # Prepend the unmatched tails of the previous chunks
+                    if carry_f:
+                        region = _records_region(chunk_f) if chunk_f else b""
+                        bf = _ReadBatch(*_parse_chunk(carry_f + region))
+                    if carry_r:
+                        region = _records_region(chunk_r) if chunk_r else b""
+                        br = _ReadBatch(*_parse_chunk(carry_r + region))
+                ids_f = _extract_ids(bf, idf, id_sep, casava == "Old")
+                ids_r = _extract_ids(br, idf, id_sep, False)
+                set_f, set_r = set(ids_f), set(ids_r)
+                in_r = [i for i, x in enumerate(ids_f) if x in set_r]
+                in_f = [i for i, x in enumerate(ids_r) if x in set_f]
+                last_f = in_r[-1] + 1 if in_r else 0
+                last_r = in_f[-1] + 1 if in_f else 0
+                carry_f = b"".join(bf.record_bytes(i)
+                                   for i in range(last_f, bf.n))
+                carry_r = b"".join(br.record_bytes(i)
+                                   for i in range(last_r, br.n))
+                bf.subset_(np.asarray(in_r, dtype=np.int64))
+                br.subset_(np.asarray(in_f, dtype=np.int64))
+            first_chunk = False
+
+            off_f = _detect_quality_offset(bf, quality_type)
+            off_r = _detect_quality_offset(br, quality_type)
+            for q, off in ((tq[0], off_f), (tq[1], off_r)):
+                if q is not None and not (33 <= q + off <= 126):
+                    raise ValueError("Encoding for this trunc_q value not found.")
             if bf.n != br.n:
                 raise ValueError(
                     f"Mismatched forward and reverse sequence files: "
                     f"{bf.n}, {br.n}.")
             npairs = bf.n
-            reads_in += npairs
+            if match_ids:
+                # R counts the raw records of each forward chunk
+                reads_in += len(chunk_f[1]) // 4 if chunk_f else 0
+            else:
+                reads_in += npairs
             keep = np.ones(npairs, dtype=bool)
             order = np.arange(npairs)
             swapped = np.zeros(npairs, dtype=bool)
@@ -748,9 +923,10 @@ def fastq_paired_filter(
                         b.seq_e[m] -= k
                         b.qual_e[m] -= k
 
-                def truncq_cut_(self, tq_byte, active):
+                def truncq_cut_(self, tq_val, active):
                     for b, m in self._sel():
-                        b.truncq_cut_(tq_byte, active & m)
+                        off = off_f if b is bf else off_r
+                        b.truncq_cut_(tq_val + off, active & m)
 
                 def truncate_(self, length):
                     for b, m in self._sel():
@@ -789,9 +965,9 @@ def fastq_paired_filter(
 
             # --- trunc_q, then drop zero-width pairs ---
             if tq[0] is not None:
-                roleF.truncq_cut_(tq[0] + 33, keep)
+                roleF.truncq_cut_(tq[0], keep)
             if tq[1] is not None:
-                roleR.truncq_cut_(tq[1] + 33, keep)
+                roleR.truncq_cut_(tq[1], keep)
             keep &= (roleF.widths() > 0) & (roleR.widths() > 0)
 
             # --- trunc_len ---
@@ -832,7 +1008,8 @@ def fastq_paired_filter(
                     if not (need_minq or need_ee):
                         continue
                     for b, gidx, sel in role.gather(idx):
-                        ee, minq = _ee_and_minq(b, gidx)
+                        ee, minq = _ee_and_minq(b, gidx,
+                                                off_f if b is bf else off_r)
                         sub = np.zeros(len(idx), dtype=bool)
                         flags = np.zeros(len(gidx), dtype=bool)
                         if need_minq:
@@ -941,8 +1118,12 @@ def filter_and_trim(
     rm_phix: Union[bool, Tuple[bool, bool]] = True,
     rm_lowcomplex: Union[float, Tuple[float, float]] = 0.0,
     orient_fwd: Optional[str] = None,
+    match_ids: bool = False,
+    id_sep: str = r"\s",
+    id_field: Optional[int] = None,
     compress: bool = True,
     n: int = 1_000_000,
+    quality_type: str = "Auto",
     multithread: Union[bool, int] = False,
     verbose: bool = False,
 ) -> np.ndarray:
@@ -1026,8 +1207,12 @@ def filter_and_trim(
         orient_fwd=orient_fwd,
         compress=compress,
         n=n,
+        quality_type=quality_type,
         verbose=verbose,
     )
+    if paired:
+        common_kw.update(match_ids=match_ids, id_sep=id_sep,
+                         id_field=id_field)
 
     results = np.zeros((n_files, 2), dtype=np.int64)
 

@@ -22,7 +22,7 @@ def _make_pool(n_workers):
         return _loky_executor(max_workers=n_workers)
     return ProcessPoolExecutor(max_workers=n_workers, mp_context=_MP_CTX)
 from . import _cdada
-from .io import derep_fastq
+from .io import combine_dereps, derep_fastq
 from .error import loess_errfun, get_initial_err
 
 DADA_OPTS = {
@@ -47,6 +47,8 @@ DADA_OPTS = {
     "SSE": 2,
     "GAPLESS": True,
     "GREEDY": True,
+    "PSEUDO_ABUNDANCE": float("inf"),
+    "PSEUDO_PREVALENCE": 2,
 }
 
 
@@ -57,7 +59,7 @@ def _run_one_sample(args):
     ProcessPoolExecutor. For ProcessPoolExecutor, re-imports _cdada
     in each subprocess since ctypes handles can't be pickled.
     """
-    drp, erri, opts, max_clust, verbose, nthreads = args
+    drp, erri, opts, max_clust, verbose, nthreads, prior_seqs = args
     try:
         _cd = _cdada  # ThreadPoolExecutor: module already imported
     except NameError:
@@ -71,8 +73,13 @@ def _run_one_sample(args):
 
     homo_gap = opts["GAP_PENALTY"] if opts["HOMOPOLYMER_GAP_PENALTY"] is None else opts["HOMOPOLYMER_GAP_PENALTY"]
 
+    priors = None
+    if prior_seqs:
+        priors = np.fromiter((s in prior_seqs for s in seqs), dtype=np.int32,
+                             count=len(seqs))
+
     res = _cd.run_dada(
-        seqs, drp["abundances"], erri, drp["quals"],
+        seqs, drp["abundances"], erri, drp["quals"], priors=priors,
         match=opts["MATCH"], mismatch=opts["MISMATCH"], gap_pen=opts["GAP_PENALTY"],
         use_kmers=opts["USE_KMERS"], kdist_cutoff=opts["KDIST_CUTOFF"],
         band_size=opts["BAND_SIZE"],
@@ -93,7 +100,7 @@ def _run_one_sample(args):
 
 def _run_one_file_sample(args):
     """Dereplicate one FASTQ and denoise it in the same worker."""
-    filepath, err, opts, max_clust, verbose, nthreads = args
+    filepath, err, opts, max_clust, verbose, nthreads, prior_seqs = args
     drp = derep_fastq(filepath, verbose=verbose)
 
     max_q = 0
@@ -105,7 +112,8 @@ def _run_one_file_sample(args):
         extra = np.tile(erri[:, -1:], (1, max_q - erri.shape[1]))
         erri = np.hstack([erri, extra])
 
-    return _run_one_sample((drp, erri, opts, max_clust, verbose, nthreads))
+    return _run_one_sample(
+        (drp, erri, opts, max_clust, verbose, nthreads, prior_seqs))
 
 
 def set_dada_opt(**kwargs):
@@ -122,8 +130,72 @@ def get_dada_opt(key=None):
     return DADA_OPTS[key]
 
 
+def _pseudo_priors_from(results, opts):
+    """Sequences qualifying as pseudo-pooling priors (R's rule): present in
+    at least PSEUDO_PREVALENCE samples, or with total abundance of at
+    least PSEUDO_ABUNDANCE across samples."""
+    prevalence = {}
+    total = {}
+    for res in results:
+        for sq, ab in res["denoised"].items():
+            if ab > 0:
+                prevalence[sq] = prevalence.get(sq, 0) + 1
+                total[sq] = total.get(sq, 0) + ab
+    return frozenset(
+        sq for sq in prevalence
+        if prevalence[sq] >= opts["PSEUDO_PREVALENCE"]
+        or total[sq] >= opts["PSEUDO_ABUNDANCE"])
+
+
+def _expand_pooled(pooled, pooled_derep, derep_in):
+    """Split a pooled dada result into per-sample results (R's pool=TRUE
+    expansion): keep the clusters each sample's uniques map to, renumber
+    them, remap the per-unique map, and recompute per-sample abundances.
+    trans and pval keep their pooled values, as in R."""
+    pooled_map = np.asarray(pooled["map"], dtype=np.int64)
+    nclust = len(pooled["cluster_seqs"])
+    seq_index = {sq: i for i, sq in enumerate(pooled_derep["seqs"])}
+
+    out = []
+    for drp in derep_in:
+        uidx = np.fromiter((seq_index[sq] for sq in drp["seqs"]),
+                           dtype=np.int64, count=len(drp["seqs"]))
+        m = pooled_map[uidx]
+        keep = np.zeros(nclust, dtype=bool)
+        keep[m[m >= 0]] = True
+        new_bi = np.cumsum(keep) - 1  # pooled cluster idx -> sample idx
+
+        map_i = np.where(m >= 0, new_bi[np.maximum(m, 0)], -1).astype(np.int32)
+        n_keep = int(keep.sum())
+        abunds = np.zeros(n_keep, dtype=np.int64)
+        valid = map_i >= 0
+        np.add.at(abunds, map_i[valid],
+                  np.asarray(drp["abundances"], dtype=np.int64)[valid])
+
+        keep_idx = np.flatnonzero(keep)
+        res = {
+            "cluster_seqs": [pooled["cluster_seqs"][j] for j in keep_idx],
+            "cluster_abunds": abunds.astype(np.int32),
+            "map": map_i,
+            # Pooled values, pruned per cluster where R prunes them:
+            "cluster_n0": np.asarray(pooled["cluster_n0"])[keep_idx]
+                if "cluster_n0" in pooled else None,
+            "cluster_n1": np.asarray(pooled["cluster_n1"])[keep_idx]
+                if "cluster_n1" in pooled else None,
+            "cluster_nunq": np.asarray(pooled["cluster_nunq"])[keep_idx]
+                if "cluster_nunq" in pooled else None,
+            # Pooled (not per-sample) values, as in R:
+            "trans": pooled["trans"],
+            "pval": pooled["pval"],
+        }
+        res["denoised"] = {sq: int(ab) for sq, ab in
+                           zip(res["cluster_seqs"], res["cluster_abunds"])}
+        out.append(res)
+    return out
+
+
 def dada(derep, err=None, error_estimation_function=None, self_consist=False,
-         verbose=True, **opts):
+         pool=False, priors=None, verbose=True, **opts):
     """Run DADA2 denoising on one or more dereplicated samples.
 
     Args:
@@ -131,6 +203,14 @@ def dada(derep, err=None, error_estimation_function=None, self_consist=False,
         err: numpy array (16, ncol) error matrix, or None for self-consistent learning
         error_estimation_function: callable(trans) -> err_matrix, default loess_errfun
         self_consist: bool, iterate until error model converges
+        pool: False (default) processes samples independently; True pools
+            all samples into one inference (R's pool=TRUE, including the
+            per-sample expansion of the pooled result); "pseudo" runs
+            R's pseudo-pooling (a second pass with the first pass's
+            consistently-observed sequences as priors, controlled by
+            PSEUDO_PREVALENCE / PSEUDO_ABUNDANCE).
+        priors: sequences with prior evidence of existence (R's priors);
+            they are evaluated against OMEGA_P instead of OMEGA_A
         verbose: bool
 
     Returns:
@@ -139,6 +219,8 @@ def dada(derep, err=None, error_estimation_function=None, self_consist=False,
             cluster_seqs, cluster_abunds, trans, map, pval, err_in, err_out
 
     Environment variables:
+        DADA2_CORES: total cores to plan for (default: os.cpu_count();
+            set this under containers/schedulers that allocate fewer)
         DADA2_WORKERS: number of sample-level worker processes
             (0 = auto-detect, default)
         DADA2_OMP_THREADS: OpenMP threads per worker for the within-sample
@@ -157,13 +239,36 @@ def dada(derep, err=None, error_estimation_function=None, self_consist=False,
         derep = [derep]
     elif isinstance(derep, list) and len(derep) > 0 and isinstance(derep[0], str):
         file_inputs = list(derep)
-        derep = [derep_fastq(f, verbose=verbose) for f in derep] if self_consist or err is None else derep
+        need_dereps = self_consist or err is None or pool is True
+        derep = [derep_fastq(f, verbose=verbose) for f in derep] if need_dereps else derep
 
     single = len(file_inputs) == 1 if file_inputs is not None else len(derep) == 1
 
     # Merge options
     o = dict(DADA_OPTS)
     o.update(opts)
+
+    # Priors and pooling (R: pool has no effect on a single sample)
+    prior_seqs = frozenset(priors) if priors else frozenset()
+    pseudo = False
+    pseudo_priors = frozenset()
+    derep_in = None
+    n_inputs = len(file_inputs) if file_inputs is not None else len(derep)
+    if n_inputs <= 1:
+        pool = False
+    if pool is True:
+        derep_in = derep
+        file_inputs = None  # pooled inference runs on the combined derep
+        derep = [combine_dereps(derep_in)]
+        if verbose:
+            print(f"{len(derep_in)} samples were pooled: "
+                  f"{int(derep[0]['abundances'].sum())} reads in "
+                  f"{len(derep[0]['seqs'])} unique sequences.")
+    elif pool == "pseudo":
+        pool = False
+        pseudo = True
+    elif pool is not False:
+        raise ValueError("Invalid pool argument.")
 
     # Initialize error matrix (matching R: all 1.0)
     initialize_err = False
@@ -186,7 +291,9 @@ def dada(derep, err=None, error_estimation_function=None, self_consist=False,
     # invocations.  Cores are split between sample-level workers and the
     # within-sample OpenMP comparison loop, so a lone pooled sample uses
     # every core while many small samples get one core each.
-    cores = os.cpu_count() or 1
+    # DADA2_CORES bounds the total-core estimate (containers and batch
+    # schedulers often allocate fewer cores than os.cpu_count reports)
+    cores = int(os.environ.get("DADA2_CORES", "0")) or (os.cpu_count() or 1)
     n_workers = int(os.environ.get("DADA2_WORKERS", "0"))
     if n_workers == 0:
         n_workers = min(len(derep), cores)
@@ -197,16 +304,21 @@ def dada(derep, err=None, error_estimation_function=None, self_consist=False,
 
     if file_inputs is not None and not self_consist:
         max_clust_iter = o["MAX_CLUST"]
-        if use_parallel:
-            work_args = [(fpath, err, o, max_clust_iter, verbose, omp_threads)
-                         for fpath in file_inputs]
-            with _make_pool(n_workers) as pool:
-                results = list(pool.map(_run_one_file_sample, work_args))
-        else:
-            results = []
-            for fpath in file_inputs:
-                results.append(_run_one_file_sample(
-                    (fpath, err, o, max_clust_iter, verbose, omp_threads)))
+
+        def _run_files(active_priors):
+            work_args = [(fpath, err, o, max_clust_iter, verbose, omp_threads,
+                          active_priors) for fpath in file_inputs]
+            if use_parallel:
+                with _make_pool(n_workers) as pool_:
+                    return list(pool_.map(_run_one_file_sample, work_args))
+            return [_run_one_file_sample(a) for a in work_args]
+
+        results = _run_files(prior_seqs)
+        if pseudo:
+            # R's pseudo-pooling: a second pass with the first pass's
+            # consistently-observed sequences added to the priors.
+            pseudo_priors = _pseudo_priors_from(results, o)
+            results = _run_files(prior_seqs | pseudo_priors)
 
         for res in results:
             res["err_in"] = err_history[0] if err_history else None
@@ -234,12 +346,13 @@ def dada(derep, err=None, error_estimation_function=None, self_consist=False,
             extra = np.tile(erri[:, -1:], (1, max_q_all - erri.shape[1]))
             erri = np.hstack([erri, extra])
 
+        active_priors = prior_seqs | pseudo_priors
         if use_parallel:
             # Parallel multi-sample execution.
-            work_args = [(drp, erri, o, max_clust_iter, verbose, omp_threads)
-                         for drp in derep]
-            with _make_pool(n_workers) as pool:
-                results = list(pool.map(_run_one_sample, work_args))
+            work_args = [(drp, erri, o, max_clust_iter, verbose, omp_threads,
+                          active_priors) for drp in derep]
+            with _make_pool(n_workers) as pool_:
+                results = list(pool_.map(_run_one_sample, work_args))
             if verbose and self_consist:
                 sys.stdout.write("." * len(derep))
                 sys.stdout.flush()
@@ -251,7 +364,8 @@ def dada(derep, err=None, error_estimation_function=None, self_consist=False,
                     sys.stdout.write(".")
                     sys.stdout.flush()
                 res = _run_one_sample(
-                    (drp, erri, o, max_clust_iter, verbose, omp_threads))
+                    (drp, erri, o, max_clust_iter, verbose, omp_threads,
+                     active_priors))
                 results.append(res)
 
         trans_list = [r["trans"] for r in results]
@@ -265,10 +379,6 @@ def dada(derep, err=None, error_estimation_function=None, self_consist=False,
         # Estimate new error rates
         err = error_estimation_function(cur_trans)
 
-        # Check convergence
-        if not self_consist:
-            break
-
         # After initialization pass: set self-transitions to 1.0 (matching R)
         if initialize_err:
             err[0, :] = 1.0   # A2A
@@ -277,18 +387,29 @@ def dada(derep, err=None, error_estimation_function=None, self_consist=False,
             err[15, :] = 1.0  # T2T
             initialize_err = False
 
+        # Termination: R breaks when done UNLESS a pseudo-pooling second
+        # pass is still owed (pseudo requires reaching nconsist >= 2).
         converged = any(np.array_equal(err, h) for h in err_history)
-        if converged:
-            if verbose:
-                print(f"Convergence after {nconsist} rounds.")
+        done = (not self_consist) or converged or nconsist >= o["MAX_CONSIST"]
+        if done and (not pseudo or nconsist >= 2):
+            if self_consist and verbose:
+                if converged:
+                    print(f"Convergence after {nconsist} rounds.")
+                elif nconsist >= o["MAX_CONSIST"]:
+                    print("Self-consistency loop terminated before convergence.")
             break
 
-        if nconsist >= o["MAX_CONSIST"]:
-            if verbose:
-                print(f"Self-consistency loop terminated before convergence.")
-            break
+        # Pseudo-pooling priors for the next pass (R computes these at the
+        # end of every full loop iteration)
+        if pseudo and nconsist >= 1:
+            pseudo_priors = _pseudo_priors_from(results, o)
 
         nconsist += 1
+
+    # Expand the pooled result into per-sample results (R's pool=TRUE)
+    if derep_in is not None:
+        results = _expand_pooled(results[0], derep[0], derep_in)
+        single = len(derep_in) == 1
 
     # Attach error info to results
     for res in results:
@@ -331,7 +452,9 @@ def learn_errors(fastq_files, nbases=1e8, error_estimation_function=None,
                            count=len(drp["seqs"]))
         return int((np.asarray(drp["abundances"], dtype=np.int64) * lens).sum())
 
-    n_workers = int(os.environ.get("DADA2_WORKERS", "0")) or (os.cpu_count() or 1)
+    n_workers = (int(os.environ.get("DADA2_WORKERS", "0"))
+                 or int(os.environ.get("DADA2_CORES", "0"))
+                 or (os.cpu_count() or 1))
     n_workers = min(n_workers, len(fastq_files))
     if n_workers > 1 and len(fastq_files) > 1:
         with _make_pool(n_workers) as pool:
