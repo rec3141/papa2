@@ -22,6 +22,7 @@ def _make_pool(n_workers):
         return _loky_executor(max_workers=n_workers)
     return ProcessPoolExecutor(max_workers=n_workers, mp_context=_MP_CTX)
 from . import _cdada
+from . import _schedule
 from .io import combine_dereps, derep_fastq
 from .error import loess_errfun, get_initial_err
 
@@ -60,6 +61,8 @@ def _run_one_sample(args):
     in each subprocess since ctypes handles can't be pickled.
     """
     drp, erri, opts, max_clust, verbose, nthreads, prior_seqs = args
+    import time as _time
+    _t0 = _time.perf_counter()
     try:
         _cd = _cdada  # ThreadPoolExecutor: module already imported
     except NameError:
@@ -95,6 +98,8 @@ def _run_one_sample(args):
 
     res["denoised"] = {seq: ab for seq, ab in
                        zip(res["cluster_seqs"], res["cluster_abunds"])}
+    # Measured wall time feeds the next scheduling pass (issue #5)
+    res["_walltime"] = _time.perf_counter() - _t0
     return res
 
 
@@ -294,35 +299,47 @@ def dada(derep, err=None, error_estimation_function=None, self_consist=False,
     # DADA2_CORES bounds the total-core estimate (containers and batch
     # schedulers often allocate fewer cores than os.cpu_count reports)
     cores = int(os.environ.get("DADA2_CORES", "0")) or (os.cpu_count() or 1)
-    n_workers = int(os.environ.get("DADA2_WORKERS", "0"))
-    if n_workers == 0:
-        # Cap workers at cores/4 so each keeps >= 4 OpenMP threads: on
-        # heavy samples the comparison loop scales well and a wide pool
-        # of single-threaded workers loses to stragglers, while on many
-        # small samples the two layouts measure the same.
-        n_workers = min(len(derep), max(1, cores // 4))
-    omp_threads = int(os.environ.get("DADA2_OMP_THREADS", "0"))
-    if omp_threads == 0:
-        omp_threads = max(1, cores // max(1, min(n_workers, len(derep))))
+    # Model-based split of cores between sample workers and per-worker
+    # OpenMP threads, from the shape of the data (issue #5); the env
+    # variables override.  Scheduling only — results are unchanged.
+    if file_inputs is not None and not (self_consist or err is None):
+        sched_weights = _schedule.file_weights(file_inputs)
+    else:
+        sched_weights = _schedule.derep_weights(derep)
+    n_workers, omp_threads = _schedule.choose_split(
+        sched_weights, cores,
+        n_workers_env=int(os.environ.get("DADA2_WORKERS", "0")),
+        omp_threads_env=int(os.environ.get("DADA2_OMP_THREADS", "0")))
     use_parallel = len(derep) > 1 and n_workers > 1
 
     if file_inputs is not None and not self_consist:
         max_clust_iter = o["MAX_CLUST"]
 
-        def _run_files(active_priors):
+        def _run_files(active_priors, weights):
             work_args = [(fpath, err, o, max_clust_iter, verbose, omp_threads,
                           active_priors) for fpath in file_inputs]
+            # Submit heaviest samples first (LPT); restore input order after.
+            order = _schedule.lpt_order(weights)
             if use_parallel:
                 with _make_pool(n_workers) as pool_:
-                    return list(pool_.map(_run_one_file_sample, work_args))
-            return [_run_one_file_sample(a) for a in work_args]
+                    shuffled = list(pool_.map(_run_one_file_sample,
+                                              [work_args[i] for i in order]))
+            else:
+                shuffled = [_run_one_file_sample(work_args[i]) for i in order]
+            results = [None] * len(work_args)
+            for pos, i in enumerate(order):
+                results[i] = shuffled[pos]
+            return results
 
-        results = _run_files(prior_seqs)
+        results = _run_files(prior_seqs, sched_weights)
         if pseudo:
             # R's pseudo-pooling: a second pass with the first pass's
-            # consistently-observed sequences added to the priors.
+            # consistently-observed sequences added to the priors.  The
+            # second pass schedules from the first pass's measured
+            # per-sample times (issue #5).
             pseudo_priors = _pseudo_priors_from(results, o)
-            results = _run_files(prior_seqs | pseudo_priors)
+            results = _run_files(prior_seqs | pseudo_priors,
+                                 _schedule.measured_weights(results, sched_weights))
 
         for res in results:
             res["err_in"] = err_history[0] if err_history else None
@@ -352,11 +369,17 @@ def dada(derep, err=None, error_estimation_function=None, self_consist=False,
 
         active_priors = prior_seqs | pseudo_priors
         if use_parallel:
-            # Parallel multi-sample execution.
+            # Parallel multi-sample execution: heaviest samples first
+            # (LPT), results restored to input order.
             work_args = [(drp, erri, o, max_clust_iter, verbose, omp_threads,
                           active_priors) for drp in derep]
+            order = _schedule.lpt_order(sched_weights)
             with _make_pool(n_workers) as pool_:
-                results = list(pool_.map(_run_one_sample, work_args))
+                shuffled = list(pool_.map(_run_one_sample,
+                                          [work_args[i] for i in order]))
+            results = [None] * len(work_args)
+            for pos, i in enumerate(order):
+                results[i] = shuffled[pos]
             if verbose and self_consist:
                 sys.stdout.write("." * len(derep))
                 sys.stdout.flush()
@@ -371,6 +394,13 @@ def dada(derep, err=None, error_estimation_function=None, self_consist=False,
                     (drp, erri, o, max_clust_iter, verbose, omp_threads,
                      active_priors))
                 results.append(res)
+
+        # Later rounds schedule from this round's measured per-sample
+        # times — better than any model, and free (issue #5).  The
+        # initialization round (MAX_CLUST=1) is much cheaper than a full
+        # round, so it does not overwrite the model weights.
+        if max_clust_iter != 1:
+            sched_weights = _schedule.measured_weights(results, sched_weights)
 
         trans_list = [r["trans"] for r in results]
 
