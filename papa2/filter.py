@@ -57,7 +57,8 @@ _IS_OTHER = np.ones(256, dtype=bool)
 for _b in b"ACGTacgt":
     _IS_OTHER[_b] = False
 
-_RC_TABLE = bytes.maketrans(b"ACGTacgt", b"TGCAtgca")
+_RC_TABLE = bytes.maketrans(b"ACGTRYSWKMBDHVNacgtryswkmbdhvn",
+                            b"TGCAYRSWMKVHDBNtgcayrswmkvhdbn")
 
 
 def _rc_bytes(seq: bytes) -> bytes:

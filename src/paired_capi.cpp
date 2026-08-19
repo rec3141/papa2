@@ -196,16 +196,17 @@ extern "C" char *dada2_rc(const char *seq)
     char *out = (char *)malloc(len + 1);
     if (!out) return NULL;
 
+    /* Full IUPAC complement, matching R's rc()/Biostrings: R->Y, K->M,
+     * B->V, D->H, S/W/N self-complementary; unknown characters pass
+     * through unchanged.  Case is preserved. */
+    static const char *from = "ACGTRYSWKMBDHVNacgtryswkmbdhvn";
+    static const char *to   = "TGCAYRSWMKVHDBNtgcayrswmkvhdbn";
+    char comp[256];
+    for (int j = 0; j < 256; j++) comp[j] = (char)j;
+    for (const char *f = from, *t = to; *f; f++, t++) comp[(unsigned char)*f] = *t;
+
     for (size_t i = 0; i < len; i++) {
-        char c = seq[len - 1 - i];
-        switch (c) {
-            case 'A': out[i] = 'T'; break;
-            case 'T': out[i] = 'A'; break;
-            case 'C': out[i] = 'G'; break;
-            case 'G': out[i] = 'C'; break;
-            case 'N': out[i] = 'N'; break;
-            default:  out[i] = 'N'; break;
-        }
+        out[i] = comp[(unsigned char)seq[len - 1 - i]];
     }
     out[len] = '\0';
     return out;
