@@ -10,7 +10,11 @@ library(dada2)
 set.seed(42)
 
 # ---- paths ------------------------------------------------------------------
-test_dir   <- "/data/papa2/tests"
+# Resolve the tests/ directory from this script's own location, overridable
+# via the PAPA2_TEST_DIR environment variable.
+script_path <- sub("--file=", "", grep("--file=", commandArgs(trailingOnly = FALSE), value = TRUE))
+test_dir <- Sys.getenv("PAPA2_TEST_DIR",
+                       unset = if (length(script_path)) dirname(normalizePath(script_path[1])) else "tests")
 data_dir   <- file.path(test_dir, "data")
 out_dir    <- file.path(test_dir, "r_outputs")
 filt_dir   <- file.path(out_dir, "filtered")
