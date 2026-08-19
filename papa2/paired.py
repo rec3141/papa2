@@ -1,8 +1,16 @@
 """High-level paired-read merging, mirroring R's mergePairs()."""
 
+import os
+
 import numpy as np
 from collections import Counter
 from ._cdada import nwalign, eval_pair, pair_consensus, rc
+
+
+def _merge_one(args):
+    """Worker for parallel multi-sample merge_pairs (picklable)."""
+    dF, drF, dR, drR, kw = args
+    return merge_pairs(dF, drF, dR, drR, **kw)
 
 
 def merge_pairs(dadaF, derepF, dadaR, derepR,
@@ -46,7 +54,31 @@ def merge_pairs(dadaF, derepF, dadaR, derepR,
             'accept': whether the pair passed the overlap/mismatch criteria
 
     Only accepted pairs are returned unless return_rejects is True.
+
+    Like R's mergePairs, all four leading arguments may be lists (one
+    entry per sample); a list of per-sample results is then returned,
+    computed in parallel across samples.
     """
+    if isinstance(dadaF, list):
+        if not (isinstance(dadaR, list) and isinstance(derepF, list)
+                and isinstance(derepR, list)
+                and len(dadaF) == len(derepF) == len(dadaR) == len(derepR)):
+            raise ValueError("dadaF/derepF/dadaR/derepR must be lists of "
+                             "the same length.")
+        kw = dict(min_overlap=min_overlap, max_mismatch=max_mismatch,
+                  return_rejects=return_rejects, trim_overhang=trim_overhang,
+                  just_concatenate=just_concatenate, verbose=verbose)
+        tasks = list(zip(dadaF, derepF, dadaR, derepR, [kw] * len(dadaF)))
+        n_workers = min(len(tasks), os.cpu_count() or 1)
+        if n_workers > 1:
+            try:
+                from loky import get_reusable_executor
+                with get_reusable_executor(max_workers=n_workers) as pool:
+                    return list(pool.map(_merge_one, tasks))
+            except ImportError:
+                pass
+        return [_merge_one(t) for t in tasks]
+
     # --- Step 1: Map each read to its denoised cluster ---
     # derepF['map'] maps read -> unique index (0-indexed)
     # dadaF['map'] maps unique index -> cluster index (0-indexed, -1 = unassigned)
