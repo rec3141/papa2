@@ -231,6 +231,7 @@ _lib.dada2_assign_taxonomy.argtypes = [
     ct.c_int,                  # ngenus
     ct.c_int,                  # nlevel
     ct.c_int,                  # verbose
+    ct.c_longlong,             # seed (>=0: R-compatible stream; <0: nondeterministic)
 ]
 
 _lib.dada2_tax_result_free.restype = None
@@ -349,7 +350,8 @@ def rc(seq):
     return result
 
 
-def run_taxonomy(seqs, refs, ref_to_genus, genusmat, ngenus, nlevel, verbose=True):
+def run_taxonomy(seqs, refs, ref_to_genus, genusmat, ngenus, nlevel, verbose=True,
+                 seed=None):
     """Run dada2 taxonomy assignment via C library.
 
     Args:
@@ -360,6 +362,10 @@ def run_taxonomy(seqs, refs, ref_to_genus, genusmat, ngenus, nlevel, verbose=Tru
         ngenus: int
         nlevel: int
         verbose: bool
+        seed: int or None.  With an integer seed, bootstrap subsampling uses
+            R's RNG stream, so results match an R session that ran
+            set.seed(seed) before assignTaxonomy().  None draws a
+            nondeterministic seed (R's tie-breaking behaviour).
 
     Returns:
         dict with:
@@ -390,7 +396,8 @@ def run_taxonomy(seqs, refs, ref_to_genus, genusmat, ngenus, nlevel, verbose=Tru
         rtg.ctypes.data_as(ct.POINTER(ct.c_int)),
         gmat.ctypes.data_as(ct.POINTER(ct.c_int)),
         ngenus, nlevel,
-        ct.c_int(int(verbose))
+        ct.c_int(int(verbose)),
+        ct.c_longlong(-1 if seed is None else int(seed)),
     )
 
     if not res_ptr:

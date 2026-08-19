@@ -14,12 +14,15 @@
 #include "dada2_capi.h"
 #include "dada.h"
 #include <cstdlib>
+#include <cstdint>
 #include <cstring>
 #include <cmath>
 #include <cfloat>
 #include <cstdio>
 #include <random>
 #include <algorithm>
+
+extern "C" void r_rng_runif_fill(uint32_t seed, double *out, long long n);
 
 #define TAX_KMER_SIZE 8
 #define TAX_N_KMERS (1 << (2 * TAX_KMER_SIZE))  /* 65536 */
@@ -81,8 +84,10 @@ static int get_best_genus(int *karray, float *out_logp, unsigned int arraylen,
     int max_g = -1;
     float max_logp = -FLT_MAX;
     unsigned int nmax = 0;
-    std::random_device rd;
-    std::mt19937 gen(rd());
+    /* Tie-breaking RNG, constructed lazily: exact logp ties are rare and
+     * std::random_device construction is costly in this hot path.  Ties
+     * are broken non-deterministically, as in R dada2. */
+    std::mt19937 *gen = nullptr;
     std::uniform_real_distribution<> cunif(0.0, 1.0);
 
     for (unsigned int g = 0; g < ngenus; g++) {
@@ -100,11 +105,16 @@ static int get_best_genus(int *karray, float *out_logp, unsigned int arraylen,
             nmax = 1;
         } else if (logp == max_logp) {
             nmax++;
-            if (cunif(gen) < 1.0 / nmax) {
+            if (!gen) {
+                std::random_device rd;
+                gen = new std::mt19937(rd());
+            }
+            if (cunif(*gen) < 1.0 / nmax) {
                 max_g = (int)g;
             }
         }
     }
+    delete gen;
     *out_logp = max_logp;
     return max_g;
 }
@@ -116,7 +126,7 @@ TaxResult* dada2_assign_taxonomy(
     const int *ref_to_genus,
     const int *genusmat,
     int ngenus, int nlevel,
-    int verbose)
+    int verbose, long long seed)
 {
     unsigned int k = TAX_KMER_SIZE;
     size_t n_kmers = TAX_N_KMERS;
@@ -156,9 +166,12 @@ TaxResult* dada2_assign_taxonomy(
     }
     free(ref_kv);
 
-    /* Compute kmer priors and log-probabilities */
+    /* Compute kmer priors and log-probabilities.  The double-precision
+     * literals match upstream dada2: the expression promotes to double
+     * before truncating back to float, and the bootstrap counts are
+     * sensitive to that last-ulp difference. */
     for (size_t km = 0; km < n_kmers; km++) {
-        kmer_prior[km] = (kmer_prior[km] + 0.5f) / (1.0f + nref);
+        kmer_prior[km] = (kmer_prior[km] + 0.5) / (1.0 + nref);
     }
     for (int g = 0; g < ngenus; g++) {
         float *lgk_v = &lgk_probability[g * n_kmers];
@@ -190,13 +203,23 @@ TaxResult* dada2_assign_taxonomy(
     result->rval = (int *)malloc(nseq * sizeof(int));
     result->rboot = (int *)calloc(nseq * nlevel, sizeof(int));
 
-    /* Generate random numbers for bootstrapping */
-    size_t n_unifs = (size_t)nseq * TAX_NBOOT * (max_arraylen / 8 + 1);
+    /* Random numbers for bootstrapping.  Count and layout replicate R
+     * dada2 1.40: one flat runif(nseq*NBOOT*(max_arraylen/8)) vector,
+     * indexed per query with a stride of max_arraylen.  With seed >= 0
+     * the values come from R's own RNG stream (set.seed-compatible), so
+     * bootstrap values are identical to a seeded R session. */
+    size_t n_unifs = (size_t)nseq * TAX_NBOOT * (max_arraylen / 8);
+    if (n_unifs == 0) n_unifs = 1;
     double *unifs = (double *)malloc(n_unifs * sizeof(double));
-    std::mt19937 rng(42);
-    std::uniform_real_distribution<double> udist(0.0, 1.0);
-    for (size_t i = 0; i < n_unifs; i++) {
-        unifs[i] = udist(rng);
+    if (seed >= 0) {
+        r_rng_runif_fill((uint32_t)seed, unifs, (long long)n_unifs);
+    } else {
+        std::random_device rd;
+        std::mt19937 rng(rd());
+        std::uniform_real_distribution<double> udist(0.0, 1.0);
+        for (size_t i = 0; i < n_unifs; i++) {
+            unifs[i] = udist(rng);
+        }
     }
 
     /* Classify each query */
@@ -223,17 +246,16 @@ TaxResult* dada2_assign_taxonomy(
         int max_g = get_best_genus(karray, &logp, arraylen, n_kmers, ngenus, lgk_probability);
         result->rval[j] = max_g + 1;  /* 1-indexed */
 
-        /* Bootstrap */
-        size_t unif_offset = (size_t)j * TAX_NBOOT * (max_arraylen / 8 + 1);
+        /* Bootstrap — indexing replicates R dada2 1.40: per-query offset
+         * j*max_arraylen into the flat unifs vector, subsample size
+         * arraylen/8 with a running index across bootstrap replicates. */
+        const double *unifs_j = unifs + (size_t)j * max_arraylen;
         size_t booti = 0;
         unsigned int sub_len = arraylen / 8;
-        if (sub_len == 0) sub_len = 1;
 
         for (int boot = 0; boot < TAX_NBOOT; boot++) {
             for (unsigned int bi = 0; bi < sub_len; bi++, booti++) {
-                int idx = (int)(arraylen * unifs[unif_offset + booti]);
-                if (idx >= (int)arraylen) idx = arraylen - 1;
-                bootarray[bi] = karray[idx];
+                bootarray[bi] = karray[(int)(arraylen * unifs_j[booti])];
             }
             int boot_g = get_best_genus(bootarray, &logp, sub_len, n_kmers, ngenus, lgk_probability);
 

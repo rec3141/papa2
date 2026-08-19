@@ -90,7 +90,8 @@ TaxResult* dada2_assign_taxonomy(
     const int *genusmat,
     int ngenus,
     int nlevel,
-    int verbose
+    int verbose,
+    long long seed  /* >= 0: R set.seed-compatible bootstrap stream; < 0: nondeterministic */
 );
 
 void dada2_tax_result_free(TaxResult *res);

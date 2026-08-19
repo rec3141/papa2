@@ -7,7 +7,7 @@ CFLAGS += -fPIC -DNDEBUG
 
 # Source files for standalone build (excludes Rmain.cpp, RcppExports.cpp,
 # taxonomy.cpp, chimera.cpp, evaluate.cpp, filter.cpp)
-CSRCS = src/derep.c src/loess.c
+CSRCS = src/derep.c src/loess.c src/r_rng.c
 
 SRCS = src/dada2_capi.cpp \
        src/paired_capi.cpp \
