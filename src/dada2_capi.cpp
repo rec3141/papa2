@@ -23,7 +23,7 @@ static B *run_dada_c(Raw **raws, int nraw, double *err_mat, int ncol_err,
                      double omegaA, double omegaP, bool detect_singletons,
                      int max_clust, double min_fold, int min_hamming, int min_abund,
                      bool use_quals, bool vectorized_alignment,
-                     bool multithread, bool verbose, int SSE, bool gapless, bool greedy);
+                     int nthreads, bool verbose, int SSE, bool gapless, bool greedy);
 
 /* Build transition matrix from clustering (mirrors b_make_transition_by_quality_matrix) */
 static void fill_trans_matrix(B *b, Sub **subs, bool has_quals, int ncol_err,
@@ -174,7 +174,8 @@ extern "C" DadaResult* dada2_run(
                        omegaA, omegaP, detect_singletons,
                        max_clust, min_fold, min_hamming, min_abund,
                        use_quals, vectorized_alignment,
-                       multithread, verbose, SSE, gapless, greedy);
+                       multithread, /* thread count: <=0 all, 1 serial */
+                       verbose, SSE, gapless, greedy);
     auto t_core1 = std::chrono::steady_clock::now();
 
     /* Build final alignments for output */
@@ -328,7 +329,7 @@ static B *run_dada_c(Raw **raws, int nraw, double *err_mat, int ncol_err,
                      double omegaA, double omegaP, bool detect_singletons,
                      int max_clust, double min_fold, int min_hamming, int min_abund,
                      bool use_quals, bool vectorized_alignment,
-                     bool multithread, bool verbose, int SSE, bool gapless, bool greedy) {
+                     int nthreads, bool verbose, int SSE, bool gapless, bool greedy) {
     int newi = 0, nshuffle = 0;
     bool shuffled = false;
     auto t_compare = std::chrono::nanoseconds::zero();
@@ -342,7 +343,8 @@ static B *run_dada_c(Raw **raws, int nraw, double *err_mat, int ncol_err,
     /* Initial comparison - all raws vs cluster 0, no kmer screen */
     auto tc0 = std::chrono::steady_clock::now();
     b_compare_omp(bb, 0, err_mat, ncol_err, match, mismatch, gap_pen, homo_gap_pen,
-                  use_kmers, 1.0, band_size, vectorized_alignment, SSE, gapless, greedy, verbose);
+                  use_kmers, 1.0, band_size, vectorized_alignment, SSE, gapless, greedy, verbose,
+                  nthreads);
     auto tc1 = std::chrono::steady_clock::now();
     t_compare += (tc1 - tc0);
     n_compare_calls++;
@@ -360,7 +362,8 @@ static B *run_dada_c(Raw **raws, int nraw, double *err_mat, int ncol_err,
 
         auto tci0 = std::chrono::steady_clock::now();
         b_compare_omp(bb, newi, err_mat, ncol_err, match, mismatch, gap_pen, homo_gap_pen,
-                      use_kmers, kdist_cutoff, band_size, vectorized_alignment, SSE, gapless, greedy, verbose);
+                      use_kmers, kdist_cutoff, band_size, vectorized_alignment, SSE, gapless, greedy, verbose,
+                      nthreads);
         auto tci1 = std::chrono::steady_clock::now();
         t_compare += (tci1 - tci0);
         n_compare_calls++;

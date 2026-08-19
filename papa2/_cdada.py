@@ -89,10 +89,20 @@ def run_dada(seqs, abundances, err_mat, quals=None, priors=None,
         err_mat: numpy array (16, ncol), error rate matrix, row-major
         quals: numpy array (nraw, maxlen) of avg quality scores, or None
         priors: array-like of int (0/1), or None
+        multithread: True = all cores, False = single-threaded, or an int
+            thread count for the within-sample OpenMP comparison loop
 
     Returns:
         dict with keys: cluster_seqs, cluster_abunds, trans, map, pval, etc.
     """
+    # Map multithread to an OpenMP thread count: <=0 means all cores.
+    if multithread is True:
+        nthreads = 0
+    elif multithread is False or multithread is None:
+        nthreads = 1
+    else:
+        nthreads = int(multithread)
+
     nraw = len(seqs)
     if nraw == 0:
         return {"cluster_seqs": [], "cluster_abunds": np.array([], dtype=np.int32),
@@ -142,7 +152,7 @@ def run_dada(seqs, abundances, err_mat, quals=None, priors=None,
         ct.c_double(min_fold), ct.c_int(min_hamming), ct.c_int(min_abund),
         ct.c_int(int(use_quals)), ct.c_int(int(vectorized_alignment)),
         ct.c_int(homo_gap_pen),
-        ct.c_int(int(multithread)), ct.c_int(int(verbose)),
+        ct.c_int(nthreads), ct.c_int(int(verbose)),
         ct.c_int(sse), ct.c_int(int(gapless)), ct.c_int(int(greedy)),
     )
 
@@ -177,6 +187,18 @@ _lib.dada2_match_ref_counts.restype = None
 _lib.dada2_match_ref_counts.argtypes = [
     ct.c_char_p,               # concat
     ct.POINTER(ct.c_int64),    # offsets (nseq+1)
+    ct.c_int,                  # nseq
+    ct.c_char_p,               # ref
+    ct.c_int,                  # word_size
+    ct.c_int,                  # non_overlapping
+    ct.POINTER(ct.c_int32),    # out counts
+]
+
+_lib.dada2_match_ref_windows.restype = None
+_lib.dada2_match_ref_windows.argtypes = [
+    ct.c_char_p,               # buf
+    ct.POINTER(ct.c_int64),    # starts
+    ct.POINTER(ct.c_int64),    # ends
     ct.c_int,                  # nseq
     ct.c_char_p,               # ref
     ct.c_int,                  # word_size

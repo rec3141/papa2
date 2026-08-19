@@ -40,7 +40,7 @@ def _run_one_sample(args):
     ProcessPoolExecutor. For ProcessPoolExecutor, re-imports _cdada
     in each subprocess since ctypes handles can't be pickled.
     """
-    drp, erri, opts, max_clust, verbose = args
+    drp, erri, opts, max_clust, verbose, nthreads = args
     try:
         _cd = _cdada  # ThreadPoolExecutor: module already imported
     except NameError:
@@ -65,7 +65,7 @@ def _run_one_sample(args):
         min_abund=opts["MIN_ABUNDANCE"],
         use_quals=opts["USE_QUALS"], vectorized_alignment=opts["VECTORIZED_ALIGNMENT"],
         homo_gap_pen=homo_gap,
-        multithread=False, verbose=verbose,
+        multithread=nthreads, verbose=verbose,
         sse=opts["SSE"], gapless=opts["GAPLESS"], greedy=opts["GREEDY"],
     )
 
@@ -76,7 +76,7 @@ def _run_one_sample(args):
 
 def _run_one_file_sample(args):
     """Dereplicate one FASTQ and denoise it in the same worker."""
-    filepath, err, opts, max_clust, verbose = args
+    filepath, err, opts, max_clust, verbose, nthreads = args
     drp = derep_fastq(filepath, verbose=verbose)
 
     max_q = 0
@@ -88,7 +88,7 @@ def _run_one_file_sample(args):
         extra = np.tile(erri[:, -1:], (1, max_q - erri.shape[1]))
         erri = np.hstack([erri, extra])
 
-    return _run_one_sample((drp, erri, opts, max_clust, verbose))
+    return _run_one_sample((drp, erri, opts, max_clust, verbose, nthreads))
 
 
 def set_dada_opt(**kwargs):
@@ -122,8 +122,10 @@ def dada(derep, err=None, error_estimation_function=None, self_consist=False,
             cluster_seqs, cluster_abunds, trans, map, pval, err_in, err_out
 
     Environment variables:
-        DADA2_WORKERS: number of parallel workers (0 = auto-detect, default)
-        OMP_NUM_THREADS: set to 1 before importing for best multi-sample performance
+        DADA2_WORKERS: number of sample-level worker processes
+            (0 = auto-detect, default)
+        DADA2_OMP_THREADS: OpenMP threads per worker for the within-sample
+            comparison loop (0 = auto: cores split evenly across workers)
     """
     if error_estimation_function is None:
         error_estimation_function = loess_errfun
@@ -164,23 +166,30 @@ def dada(derep, err=None, error_estimation_function=None, self_consist=False,
 
     # CPU-only standalone work must use processes, not threads:
     # the shared library is not thread-safe across concurrent run_dada
-    # invocations.
+    # invocations.  Cores are split between sample-level workers and the
+    # within-sample OpenMP comparison loop, so a lone pooled sample uses
+    # every core while many small samples get one core each.
+    cores = os.cpu_count() or 1
     n_workers = int(os.environ.get("DADA2_WORKERS", "0"))
     if n_workers == 0:
-        cores = os.cpu_count() or 1
         n_workers = min(len(derep), cores)
+    omp_threads = int(os.environ.get("DADA2_OMP_THREADS", "0"))
+    if omp_threads == 0:
+        omp_threads = max(1, cores // max(1, min(n_workers, len(derep))))
     use_parallel = len(derep) > 1 and n_workers > 1
 
     if file_inputs is not None and not self_consist:
         max_clust_iter = o["MAX_CLUST"]
         if use_parallel:
-            work_args = [(fpath, err, o, max_clust_iter, verbose) for fpath in file_inputs]
+            work_args = [(fpath, err, o, max_clust_iter, verbose, omp_threads)
+                         for fpath in file_inputs]
             with ProcessPoolExecutor(max_workers=n_workers) as pool:
                 results = list(pool.map(_run_one_file_sample, work_args))
         else:
             results = []
             for fpath in file_inputs:
-                results.append(_run_one_file_sample((fpath, err, o, max_clust_iter, verbose)))
+                results.append(_run_one_file_sample(
+                    (fpath, err, o, max_clust_iter, verbose, omp_threads)))
 
         for res in results:
             res["err_in"] = err_history[0] if err_history else None
@@ -210,7 +219,8 @@ def dada(derep, err=None, error_estimation_function=None, self_consist=False,
 
         if use_parallel:
             # Parallel multi-sample execution.
-            work_args = [(drp, erri, o, max_clust_iter, verbose) for drp in derep]
+            work_args = [(drp, erri, o, max_clust_iter, verbose, omp_threads)
+                         for drp in derep]
             with ProcessPoolExecutor(max_workers=n_workers) as pool:
                 results = list(pool.map(_run_one_sample, work_args))
             if verbose and self_consist:
@@ -223,7 +233,8 @@ def dada(derep, err=None, error_estimation_function=None, self_consist=False,
                 if verbose and self_consist:
                     sys.stdout.write(".")
                     sys.stdout.flush()
-                res = _run_one_sample((drp, erri, o, max_clust_iter, verbose))
+                res = _run_one_sample(
+                    (drp, erri, o, max_clust_iter, verbose, omp_threads))
                 results.append(res)
 
         trans_list = [r["trans"] for r in results]
@@ -288,17 +299,41 @@ def learn_errors(fastq_files, nbases=1e8, error_estimation_function=None,
     if isinstance(fastq_files, str):
         fastq_files = [fastq_files]
 
-    # Accumulate samples until we have enough bases
+    # Accumulate samples (in order) until we have enough bases.  Matches R:
+    # bases are counted as sum(abundance * sequence length) and accumulation
+    # stops after the sample that pushes the total strictly past nbases.
+    # Dereplication runs in a worker pool; results are consumed in file
+    # order so the selected sample set is identical to a sequential scan.
     dereps = []
     total_bases = 0
-    for fl in fastq_files:
-        drp = derep_fastq(fl, verbose=verbose)
-        dereps.append(drp)
-        n_reads = drp["abundances"].sum()
-        seqlen = len(drp["seqs"][0]) if drp["seqs"] else 0
-        total_bases += n_reads * seqlen
-        if total_bases >= nbases:
-            break
+
+    def _n_bases(drp):
+        if not drp["seqs"]:
+            return 0
+        lens = np.fromiter((len(s) for s in drp["seqs"]), dtype=np.int64,
+                           count=len(drp["seqs"]))
+        return int((np.asarray(drp["abundances"], dtype=np.int64) * lens).sum())
+
+    n_workers = int(os.environ.get("DADA2_WORKERS", "0")) or (os.cpu_count() or 1)
+    n_workers = min(n_workers, len(fastq_files))
+    if n_workers > 1 and len(fastq_files) > 1:
+        with ProcessPoolExecutor(max_workers=n_workers) as pool:
+            for drp in pool.map(derep_fastq, fastq_files):
+                if verbose:
+                    print(f"Read {int(drp['abundances'].sum())} reads, "
+                          f"{len(drp['seqs'])} unique sequences")
+                dereps.append(drp)
+                total_bases += _n_bases(drp)
+                if total_bases > nbases:
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    break
+    else:
+        for fl in fastq_files:
+            drp = derep_fastq(fl, verbose=verbose)
+            dereps.append(drp)
+            total_bases += _n_bases(drp)
+            if total_bases > nbases:
+                break
 
     if verbose:
         n_reads_total = sum(d["abundances"].sum() for d in dereps)

@@ -16,6 +16,15 @@ import gzip
 import os
 import zlib
 from concurrent.futures import ProcessPoolExecutor
+
+try:
+    # python-isal: SIMD-accelerated gzip.  Decompressed content is
+    # identical; compressed files are slightly larger than zlib level 6.
+    from isal import igzip as _igzip
+    from isal import isal_zlib as _isal_zlib
+except ImportError:
+    _igzip = None
+    _isal_zlib = None
 from typing import Optional, Sequence, Tuple, Union
 
 import numpy as np
@@ -50,6 +59,8 @@ def _rc_bytes(seq: bytes) -> bytes:
 def _open_fq(path: str, mode: str = "rb"):
     """Open a FASTQ file for binary reading, transparently handling gzip."""
     if path.endswith(".gz") or path.endswith(".gzip"):
+        if _igzip is not None:
+            return _igzip.open(path, mode)
         return gzip.open(path, mode)
     return open(path, mode)
 
@@ -64,11 +75,15 @@ class _GzipRecordWriter:
         out_dir = os.path.dirname(path)
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)
+        self._fh = open(path, "wb")
         if compress:
-            self._fh = open(path, "wb")
-            self._gz = zlib.compressobj(6, zlib.DEFLATED, 16 + zlib.MAX_WBITS)
+            if _isal_zlib is not None:
+                self._gz = _isal_zlib.compressobj(
+                    3, _isal_zlib.DEFLATED, 16 + zlib.MAX_WBITS)
+            else:
+                self._gz = zlib.compressobj(6, zlib.DEFLATED,
+                                            16 + zlib.MAX_WBITS)
         else:
-            self._fh = open(path, "wb")
             self._gz = None
 
     def write(self, data: bytes):
@@ -323,8 +338,27 @@ def _resolve_trunc_ends(trunc_len, trim_left):
 
 def _phix_flags(batch: _ReadBatch, indices) -> np.ndarray:
     """isPhiX flags for the given (trimmed) reads of a batch."""
-    seqs = [batch.get_seq_qual(int(i))[0] for i in indices]
-    return _is_phix(seqs)
+    if batch.override and any(int(i) in batch.override for i in indices):
+        seqs = [batch.get_seq_qual(int(i))[0] for i in indices]
+        return _is_phix(seqs)
+    import ctypes as ct
+    from . import _cdada
+    from .utils import _phix_genome, _rc
+    genome = _phix_genome()
+    n = len(indices)
+    starts = np.ascontiguousarray(batch.seq_s[indices], dtype=np.int64)
+    ends = np.ascontiguousarray(batch.seq_e[indices], dtype=np.int64)
+    flags = np.zeros(n, dtype=bool)
+    for ref in (genome, _rc(genome)):
+        counts = np.zeros(n, dtype=np.int32)
+        _cdada._lib.dada2_match_ref_windows(
+            batch.buf,
+            starts.ctypes.data_as(ct.POINTER(ct.c_int64)),
+            ends.ctypes.data_as(ct.POINTER(ct.c_int64)),
+            ct.c_int(n), ref.encode("ascii"), ct.c_int(16), ct.c_int(1),
+            counts.ctypes.data_as(ct.POINTER(ct.c_int32)))
+        flags |= counts >= 2
+    return flags
 
 
 def _complexity_low(batch: _ReadBatch, indices, threshold) -> np.ndarray:

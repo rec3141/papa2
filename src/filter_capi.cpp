@@ -43,21 +43,12 @@ static inline bool encode_kmer(const char *s, int word_size, uint64_t *out) {
     return true;
 }
 
-extern "C" {
 
-/*
- * Count reference kmer hits per query sequence.
- *
- * concat:   all query sequences concatenated (no separators)
- * offsets:  int64 array of length nseq+1; query i is concat[offsets[i]..offsets[i+1])
- * ref:      reference sequence (treated as circular, like C_matchRef)
- * word_size: kmer length (<= 32)
- * non_overlapping: if nonzero, skip word_size positions after each hit
- * out:      int array of length nseq to receive hit counts
- */
-void dada2_match_ref_counts(const char *concat, const int64_t *offsets,
-                            int nseq, const char *ref, int word_size,
-                            int non_overlapping, int *out) {
+/* Shared implementation over explicit per-sequence windows. */
+static void match_ref_windows_impl(const char *buf, const int64_t *starts,
+                                   const int64_t *ends, int nseq,
+                                   const char *ref, int word_size,
+                                   int non_overlapping, int *out) {
     size_t ref_len = strlen(ref);
     std::unordered_set<uint64_t> phash;
     phash.reserve(ref_len * 2);
@@ -78,8 +69,8 @@ void dada2_match_ref_counts(const char *concat, const int64_t *offsets,
 
     #pragma omp parallel for schedule(dynamic, 256)
     for (int i = 0; i < nseq; i++) {
-        const char *seq = concat + offsets[i];
-        int64_t len = offsets[i + 1] - offsets[i];
+        const char *seq = buf + starts[i];
+        int64_t len = ends[i] - starts[i];
         int count = 0;
         if (len >= word_size) {
             for (int64_t j = 0; j <= len - word_size; j++) {
@@ -92,6 +83,34 @@ void dada2_match_ref_counts(const char *concat, const int64_t *offsets,
         }
         out[i] = count;
     }
+}
+
+extern "C" {
+
+/*
+ * Count reference kmer hits per query sequence.
+ *
+ * concat:   all query sequences concatenated (no separators)
+ * offsets:  int64 array of length nseq+1; query i is concat[offsets[i]..offsets[i+1])
+ * ref:      reference sequence (treated as circular, like C_matchRef)
+ * word_size: kmer length (<= 32)
+ * non_overlapping: if nonzero, skip word_size positions after each hit
+ * out:      int array of length nseq to receive hit counts
+ */
+void dada2_match_ref_counts(const char *concat, const int64_t *offsets,
+                            int nseq, const char *ref, int word_size,
+                            int non_overlapping, int *out) {
+    /* offsets is starts[0..n-1] with offsets[i+1] as each end */
+    match_ref_windows_impl(concat, offsets, offsets + 1, nseq, ref,
+                           word_size, non_overlapping, out);
+}
+
+/* Same, but with explicit per-sequence start/end windows into buf. */
+void dada2_match_ref_windows(const char *buf, const int64_t *starts,
+                             const int64_t *ends, int nseq, const char *ref,
+                             int word_size, int non_overlapping, int *out) {
+    match_ref_windows_impl(buf, starts, ends, nseq, ref, word_size,
+                           non_overlapping, out);
 }
 
 } /* extern "C" */
