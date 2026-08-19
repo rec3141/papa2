@@ -25,6 +25,21 @@ Full documentation: **https://rec3141.github.io/papa2**
 
 ---
 
+## Performance
+
+Measured on a 32-core machine against multithreaded R dada2 1.40, real 2x151 MiSeq data
+([details and parity guarantees](https://rec3141.github.io/papa2/parity/)):
+
+| Workload | R dada2 | papa2 | Speedup |
+|----------|---------|-------|---------|
+| 6 samples end-to-end | 284 s | 156 s | 1.8x |
+| 120 samples end-to-end | 1019 s | 512 s | 2.0x |
+| filterAndTrim (single-thread) | 69 s | 10 s | 7x |
+| assignTaxonomy, SILVA 138.1 x 2,000 ASVs | 71 s | 15 s | 4.7x |
+| assignTaxonomy, SILVA 138.1 x 20,697 ASVs | ~35 min | 50 s | ~40x |
+
+---
+
 ## Quick Install
 
 ### Container (recommended for HPC)

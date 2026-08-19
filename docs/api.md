@@ -42,6 +42,8 @@ Global dictionary of algorithmic parameters used by `dada()`. Modify with
 | `SSE` | `2` | SSE level (0=off, 1=SSE2, 2=SSE4.1) |
 | `GAPLESS` | `True` | Prefer gapless alignments |
 | `GREEDY` | `True` | Use greedy clustering |
+| `PSEUDO_ABUNDANCE` | `inf` | Total abundance for a sequence to become a pseudo-pooling prior |
+| `PSEUDO_PREVALENCE` | `2` | Number of samples a sequence must appear in to become a pseudo-pooling prior |
 
 ### dada
 
@@ -76,6 +78,12 @@ FASTQ reading and dereplication.
 ### derep_fastq
 
 ::: papa2.io.derep_fastq
+    options:
+      heading_level: 3
+
+### combine_dereps
+
+::: papa2.io.combine_dereps
     options:
       heading_level: 3
 
@@ -242,6 +250,12 @@ profiling, FASTA I/O, PhiX detection, and sequence complexity analysis.
     options:
       heading_level: 3
 
+### match_ref
+
+::: papa2.utils.match_ref
+    options:
+      heading_level: 3
+
 ### seq_complexity
 
 ::: papa2.utils.seq_complexity
@@ -313,6 +327,20 @@ profiling, FASTA I/O, PhiX detection, and sequence complexity analysis.
 ::: papa2.utils.remove_primers
     options:
       heading_level: 3
+
+---
+
+## Threading
+
+### set_num_threads
+
+::: papa2._cdada.set_num_threads
+    options:
+      heading_level: 3
+
+Environment variables `DADA2_CORES`, `DADA2_WORKERS`, and
+`DADA2_OMP_THREADS` control the worker/thread split — see
+[Parity & Performance](parity.md#threading).
 
 ---
 

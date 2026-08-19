@@ -12,18 +12,20 @@ papa2 brings this proven algorithm to Python with no R dependency.
 
 ## Features
 
-- **Byte-identical results** to R's `dada2` package — [20/20 parity tests pass](https://github.com/rec3141/papa2/blob/main/tests/compare_with_r.py)
-- **Complete DADA2 port** — all 37 R functions have Python equivalents
+- **Byte-identical results** to R's `dada2` package — filtered FASTQ output, ASVs, abundance tables, and seeded taxonomy bootstraps all reproduce R exactly (see [Parity & Performance](parity.md))
+- **Complete DADA2 port** — all 37 R functions have Python equivalents, including `pool=TRUE` / `pool="pseudo"` pooling, `priors`, `matchIDs` re-pairing, `qualityType` auto-detection, and `removePrimers`
+- **Fast** — roughly 2× R end-to-end multithreaded, ~7× on filtering, and ~5–40× on taxonomy assignment (see the [benchmarks](parity.md#performance))
 - **Full workflow** in Python: filtering, dereplication, error learning, denoising, paired-end merging, chimera removal, sequence tables, taxonomy, and visualization
 - **LOESS error modeling** that faithfully mirrors R's `loessErrfun`
-- **Bayesian taxonomy classifier** (`assign_taxonomy`) matching R's `assignTaxonomy`
+- **Bayesian taxonomy classifier** (`assign_taxonomy`) matching R's `assignTaxonomy`, with `seed=` reproducing an R session's `set.seed()` bootstrap stream
 - **Interactive Sankey diagrams** for read tracking through the pipeline
-- **Parallel processing** across samples via `ProcessPoolExecutor`
+- **Parallel processing** — worker pools across samples plus OpenMP inside the C core, split automatically (see [Threading](parity.md#threading))
 - Drop-in replacement for `dada2` R scripts translated to Python
 
 ## Status
 
-The current project is CPU-only. GPU support is planned.
+Stable as of v1.0.0. The current project is CPU-only. GPU support is planned
+(see the `gpu` branch spec).
 
 ## Provenance
 

@@ -50,6 +50,7 @@ nav:
   - Quickstart: quickstart.md
   - Tutorial: tutorial.md
   - Big Data: bigdata.md
+  - Parity & Performance: parity.md
   - API Reference: api.md
 
 markdown_extensions:

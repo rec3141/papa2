@@ -55,7 +55,7 @@ pip install -e .
 ```python
 import papa2
 print(papa2.__version__)
-# 0.1.0
+# e.g. 1.0.0 (derived from the git tag)
 ```
 
 ---
@@ -166,11 +166,25 @@ papa2.plot_sankey(track, output="read_tracking.html")
 
 ## Parallelism
 
-Set `DADA2_WORKERS` to control parallel workers for multi-sample denoising:
+papa2 splits the available cores automatically: sample-level worker
+processes × OpenMP threads inside the C core per worker. Many small
+samples get one core each; a single pooled sample uses the whole
+machine. No configuration is needed on a dedicated machine.
+
+Under a CPU allocation (containers, batch schedulers) tell papa2 what it
+actually has:
 
 ```bash
-export DADA2_WORKERS=8
+export DADA2_CORES=8        # total cores to plan for
+export OMP_NUM_THREADS=8    # cap OpenMP regions (read at import time)
 ```
 
-Set `OMP_NUM_THREADS=1` before importing papa2 for best multi-sample
-performance (avoids contention between Python-level and OpenMP parallelism).
+or from Python, after import:
+
+```python
+papa2.set_num_threads(8)
+```
+
+`DADA2_WORKERS` and `DADA2_OMP_THREADS` override the automatic split when
+you need explicit control. See [Parity & Performance](parity.md#threading)
+for details.

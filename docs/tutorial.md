@@ -156,6 +156,22 @@ for name, dF in zip(sample_names, dadaFs):
     print(f"  {name}: {n_asvs} ASVs")
 ```
 
+### Pooling
+
+Like R, `dada()` supports pooled and pseudo-pooled inference for improved
+sensitivity to rare variants shared across samples:
+
+```python
+dadaFs = papa2.dada(derepFs, err=errF, pool=True)      # full pooling
+dadaFs = papa2.dada(derepFs, err=errF, pool="pseudo")  # pseudo-pooling
+dadaFs = papa2.dada(derepFs, err=errF, priors=known)   # prior sequences
+```
+
+`pool=True` pools all samples into one inference and expands the result
+back per sample; `pool="pseudo"` runs a second pass using the first
+pass's consistently-observed sequences as priors (controlled by
+`PSEUDO_PREVALENCE` / `PSEUDO_ABUNDANCE`). Both are byte-identical to R.
+
 ### Tuning DADA options
 
 All algorithmic parameters from R's `DADA_OPTS` are exposed:
@@ -179,6 +195,8 @@ full amplicon sequence. Pairs are accepted only when the overlap satisfies both
 `min_overlap` and `max_mismatch`.
 
 ```python
+# merge_pairs also accepts lists (one entry per sample) and merges the
+# samples in parallel — shown per-sample here for clarity:
 mergers = []
 for name, dF, drF, dR, drR in zip(
         sample_names, dadaFs, derepFs, dadaRs, derepRs):
@@ -187,9 +205,8 @@ for name, dF, drF, dR, drR in zip(
                           max_mismatch=0,
                           verbose=True)
     mergers.append(m)
-    n_accept = sum(1 for r in m if r["accept"])
-    n_reads  = sum(r["abundance"] for r in m if r["accept"])
-    print(f"  {name}: {n_accept} merged pairs, {n_reads} reads")
+    n_reads = sum(r["abundance"] for r in m)
+    print(f"  {name}: {len(m)} merged pairs, {n_reads} reads")
 ```
 
 Each element of `mergers` is a list of dicts:
@@ -203,7 +220,12 @@ Each element of `mergers` is a list of dicts:
 | `nmatch` | `int` | Overlap matches |
 | `nmismatch` | `int` | Overlap mismatches |
 | `nindel` | `int` | Overlap indels |
+| `prefer` | `int` | Which read wins mismatch positions (1=forward, 2=reverse), chosen by denoised n0 like R |
 | `accept` | `bool` | Passed acceptance criteria |
+
+Rejected pairs are excluded from the result (like R); pass
+`return_rejects=True` to keep them, with `accept: False` and an empty
+sequence.
 
 !!! tip "Just concatenate"
     For amplicons where forward and reverse reads do not overlap (e.g. long V1-V3
@@ -300,6 +322,7 @@ taxa = papa2.assign_taxonomy(
     seqtab_nochim["seqs"],
     "silva_nr99_v138.1_train_set.fa.gz",
     min_boot=50,
+    seed=100,       # reproduces an R session that ran set.seed(100)
     verbose=True,
 )
 # taxa is a DataFrame: rows = ASV sequences, columns = Kingdom..Species

@@ -232,10 +232,18 @@ np.savez(
 
 ## Performance Tips
 
-- Set `DADA2_WORKERS=N` to parallelise the `dada()` calls across CPU cores.
-  Each worker processes one sample, so set this to the number of cores available.
-- Set `OMP_NUM_THREADS=1` to avoid contention between Python-level and
-  OpenMP-level parallelism.
+- papa2 splits cores between sample-level workers and within-sample OpenMP
+  threads automatically — a streaming per-sample loop like the one above
+  still uses every core, because each `dada()` call parallelises
+  internally. Passing lists (`papa2.dada(dereps, ...)`,
+  `papa2.derep_fastq(files)`, `papa2.merge_pairs(ddFs, drFs, ddRs, drRs)`)
+  additionally parallelises across samples.
+- Under a CPU allocation (containers, batch schedulers), set
+  `DADA2_CORES=N` and `OMP_NUM_THREADS=N` before importing papa2 (or call
+  `papa2.set_num_threads(N)` after) — `os.cpu_count()` overreports inside
+  cgroups. See [Parity & Performance](parity.md#threading).
+- `DADA2_WORKERS` / `DADA2_OMP_THREADS` override the automatic split when
+  needed.
 - For cluster/cloud: each run's Stage 2–3 is independent and can be submitted
   as a separate job. Only Stage 4–6 requires all runs to be complete.
 - Memory scales with the largest single sample, not the total dataset size.
