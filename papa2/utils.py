@@ -645,11 +645,12 @@ def make_sequence_table(
         for seq, ab in samples_dict[sample_name].items():
             mat[i, seq_index[seq]] = int(ab)
 
-    # Order columns
+    # Order columns.  Stable sort: ties keep first-appearance order,
+    # matching R's order() in makeSequenceTable.
     if order_by == "abundance":
-        col_order = np.argsort(-mat.sum(axis=0))
+        col_order = np.argsort(-mat.sum(axis=0), kind="stable")
     elif order_by == "nsamples":
-        col_order = np.argsort(-(mat > 0).sum(axis=0))
+        col_order = np.argsort(-(mat > 0).sum(axis=0), kind="stable")
     else:
         col_order = np.arange(len(seq_list))
 

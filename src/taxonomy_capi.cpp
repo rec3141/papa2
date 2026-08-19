@@ -119,6 +119,59 @@ static int get_best_genus(int *karray, float *out_logp, unsigned int arraylen,
     return max_g;
 }
 
+
+/* Score genera from a pre-gathered probability matrix S (ngenus x
+ * arraylen, row-major): S[g*arraylen + i] == lgk_probability[g*n_kmers +
+ * karray[i]].  Iterates the same values in the same order with the same
+ * early break as get_best_genus, so results are bit-identical — only the
+ * memory layout changes (contiguous rows instead of 65536-wide strides).
+ * positions == NULL scores the full array; otherwise scores
+ * S[g*arraylen + positions[p]] for p in 0..npos. */
+static int get_best_genus_gathered(const float *S, float *out_logp,
+                                   unsigned int arraylen,
+                                   const int *positions, unsigned int npos,
+                                   unsigned int ngenus) {
+    int max_g = -1;
+    float max_logp = -FLT_MAX;
+    unsigned int nmax = 0;
+    std::mt19937 *gen = nullptr;
+    std::uniform_real_distribution<> cunif(0.0, 1.0);
+
+    for (unsigned int g = 0; g < ngenus; g++) {
+        const float *row = S + (size_t)g * arraylen;
+        float logp = 0.0f;
+        if (positions == NULL) {
+            for (unsigned int i = 0; i < arraylen; i++) {
+                logp += row[i];
+                if (logp < max_logp) break;
+            }
+        } else {
+            for (unsigned int p = 0; p < npos; p++) {
+                logp += row[positions[p]];
+                if (logp < max_logp) break;
+            }
+        }
+
+        if (max_logp < -FLT_MAX + 1 || logp > max_logp) {
+            max_logp = logp;
+            max_g = (int)g;
+            nmax = 1;
+        } else if (logp == max_logp) {
+            nmax++;
+            if (!gen) {
+                std::random_device rd;
+                gen = new std::mt19937(rd());
+            }
+            if (cunif(*gen) < 1.0 / nmax) {
+                max_g = (int)g;
+            }
+        }
+    }
+    delete gen;
+    *out_logp = max_logp;
+    return max_g;
+}
+
 extern "C"
 TaxResult* dada2_assign_taxonomy(
     const char **seqs, int nseq,
@@ -140,31 +193,64 @@ TaxResult* dada2_assign_taxonomy(
         genus_num_plus1[g]++;
     }
 
-    /* Build per-genus kmer probability table */
+    /* Build per-genus kmer probability table.  Parallelised by genus so
+     * no two threads touch the same lgk row; kmer priors accumulate into
+     * per-thread buffers.  All accumulated values are integer counts
+     * (exactly representable in float), so the result is bit-identical
+     * to the serial order. */
     float *kmer_prior = (float *)calloc(n_kmers, sizeof(float));
     float *lgk_probability = (float *)calloc(ngenus * n_kmers, sizeof(float));
-    unsigned char *ref_kv = (unsigned char *)malloc(n_kmers);
 
-    if (!genus_num_plus1 || !kmer_prior || !lgk_probability || !ref_kv) {
+    if (!genus_num_plus1 || !kmer_prior || !lgk_probability) {
         fprintf(stderr, "[ERROR] Memory allocation failed in taxonomy.\n");
         return NULL;
     }
 
-    for (int i = 0; i < nref; i++) {
-        if (verbose && i > 0 && i % 100000 == 0) {
-            fprintf(stderr, "[INFO] Processed %d/%d references\n", i, nref);
-        }
-        tax_kvec_build(refs[i], k, ref_kv);
-        int g = ref_to_genus[i];
-        float *lgk_v = &lgk_probability[g * n_kmers];
-        for (size_t km = 0; km < n_kmers; km++) {
-            if (ref_kv[km]) {
-                lgk_v[km]++;
-                kmer_prior[km]++;
+    {
+        /* Bucket references by genus (counting sort, preserves order) */
+        int *genus_start = (int *)calloc(ngenus + 1, sizeof(int));
+        int *ref_by_genus = (int *)malloc(nref * sizeof(int));
+        for (int i = 0; i < nref; i++) genus_start[ref_to_genus[i] + 1]++;
+        for (int g = 0; g < ngenus; g++) genus_start[g + 1] += genus_start[g];
+        {
+            int *fill = (int *)malloc(ngenus * sizeof(int));
+            memcpy(fill, genus_start, ngenus * sizeof(int));
+            for (int i = 0; i < nref; i++) {
+                ref_by_genus[fill[ref_to_genus[i]]++] = i;
             }
+            free(fill);
         }
+
+        #pragma omp parallel
+        {
+            unsigned char *ref_kv = (unsigned char *)malloc(n_kmers);
+            float *prior_local = (float *)calloc(n_kmers, sizeof(float));
+
+            #pragma omp for schedule(dynamic, 16)
+            for (int g = 0; g < ngenus; g++) {
+                float *lgk_v = &lgk_probability[(size_t)g * n_kmers];
+                for (int p = genus_start[g]; p < genus_start[g + 1]; p++) {
+                    tax_kvec_build(refs[ref_by_genus[p]], k, ref_kv);
+                    for (size_t km = 0; km < n_kmers; km++) {
+                        if (ref_kv[km]) {
+                            lgk_v[km]++;
+                            prior_local[km]++;
+                        }
+                    }
+                }
+            }
+
+            #pragma omp critical
+            for (size_t km = 0; km < n_kmers; km++) {
+                kmer_prior[km] += prior_local[km];
+            }
+
+            free(prior_local);
+            free(ref_kv);
+        }
+        free(genus_start);
+        free(ref_by_genus);
     }
-    free(ref_kv);
 
     /* Compute kmer priors and log-probabilities.  The double-precision
      * literals match upstream dada2: the expression promotes to double
@@ -173,8 +259,9 @@ TaxResult* dada2_assign_taxonomy(
     for (size_t km = 0; km < n_kmers; km++) {
         kmer_prior[km] = (kmer_prior[km] + 0.5) / (1.0 + nref);
     }
+    #pragma omp parallel for schedule(static)
     for (int g = 0; g < ngenus; g++) {
-        float *lgk_v = &lgk_probability[g * n_kmers];
+        float *lgk_v = &lgk_probability[(size_t)g * n_kmers];
         for (size_t km = 0; km < n_kmers; km++) {
             lgk_v[km] = logf((lgk_v[km] + kmer_prior[km]) / genus_num_plus1[g]);
         }
@@ -227,47 +314,80 @@ TaxResult* dada2_assign_taxonomy(
         fprintf(stderr, "[INFO] Classifying %d query sequences...\n", nseq);
     }
 
-    #pragma omp parallel for schedule(dynamic, 1)
-    for (int j = 0; j < nseq; j++) {
-        int karray[10000];
-        int bootarray[10000 / 8 + 1];
-        float logp;
+    #pragma omp parallel
+    {
+        /* Per-thread gather buffer: S[g][i] = lgk[g][karray[i]] */
+        float *S = (float *)malloc((size_t)ngenus * max_arraylen * sizeof(float));
 
-        size_t seqlen = strlen(seqs[j]);
-        if (seqlen < 50) {
-            result->rval[j] = 0;  /* NA */
-            for (int lev = 0; lev < nlevel; lev++) {
-                result->rboot[j * nlevel + lev] = 0;
+        #pragma omp for schedule(dynamic, 1)
+        for (int j = 0; j < nseq; j++) {
+            int karray[10000];
+            int bootpos[10000 / 8 + 1];
+            float logp;
+
+            size_t seqlen = strlen(seqs[j]);
+            if (seqlen < 50) {
+                result->rval[j] = 0;  /* NA */
+                for (int lev = 0; lev < nlevel; lev++) {
+                    result->rboot[j * nlevel + lev] = 0;
+                }
+                continue;
             }
-            continue;
-        }
 
-        unsigned int arraylen = tax_karray_build(seqs[j], k, karray);
-        int max_g = get_best_genus(karray, &logp, arraylen, n_kmers, ngenus, lgk_probability);
-        result->rval[j] = max_g + 1;  /* 1-indexed */
-
-        /* Bootstrap — indexing replicates R dada2 1.40: per-query offset
-         * j*max_arraylen into the flat unifs vector, subsample size
-         * arraylen/8 with a running index across bootstrap replicates. */
-        const double *unifs_j = unifs + (size_t)j * max_arraylen;
-        size_t booti = 0;
-        unsigned int sub_len = arraylen / 8;
-
-        for (int boot = 0; boot < TAX_NBOOT; boot++) {
-            for (unsigned int bi = 0; bi < sub_len; bi++, booti++) {
-                bootarray[bi] = karray[(int)(arraylen * unifs_j[booti])];
+            unsigned int arraylen = tax_karray_build(seqs[j], k, karray);
+            int max_g;
+            if (S != NULL && arraylen > 0) {
+                for (unsigned int g = 0; g < (unsigned int)ngenus; g++) {
+                    const float *lgk_v = &lgk_probability[(size_t)g * n_kmers];
+                    float *row = S + (size_t)g * arraylen;
+                    for (unsigned int i = 0; i < arraylen; i++) {
+                        row[i] = lgk_v[karray[i]];
+                    }
+                }
+                max_g = get_best_genus_gathered(S, &logp, arraylen, NULL,
+                                                arraylen, ngenus);
+            } else {
+                max_g = get_best_genus(karray, &logp, arraylen, n_kmers,
+                                       ngenus, lgk_probability);
             }
-            int boot_g = get_best_genus(bootarray, &logp, sub_len, n_kmers, ngenus, lgk_probability);
+            result->rval[j] = max_g + 1;  /* 1-indexed */
 
-            /* Count agreement at each level */
-            for (int lev = 0; lev < nlevel; lev++) {
-                if (genusmat[boot_g * nlevel + lev] == genusmat[max_g * nlevel + lev]) {
-                    result->rboot[j * nlevel + lev]++;
+            /* Bootstrap — indexing replicates R dada2 1.40: per-query offset
+             * j*max_arraylen into the flat unifs vector, subsample size
+             * arraylen/8 with a running index across bootstrap replicates. */
+            const double *unifs_j = unifs + (size_t)j * max_arraylen;
+            size_t booti = 0;
+            unsigned int sub_len = arraylen / 8;
+
+            for (int boot = 0; boot < TAX_NBOOT; boot++) {
+                int boot_g;
+                if (S != NULL && arraylen > 0) {
+                    for (unsigned int bi = 0; bi < sub_len; bi++, booti++) {
+                        bootpos[bi] = (int)(arraylen * unifs_j[booti]);
+                    }
+                    boot_g = get_best_genus_gathered(S, &logp, arraylen,
+                                                     bootpos, sub_len, ngenus);
                 } else {
-                    break;
+                    int bootarray[10000 / 8 + 1];
+                    for (unsigned int bi = 0; bi < sub_len; bi++, booti++) {
+                        bootarray[bi] = karray[(int)(arraylen * unifs_j[booti])];
+                    }
+                    boot_g = get_best_genus(bootarray, &logp, sub_len, n_kmers,
+                                            ngenus, lgk_probability);
+                }
+
+                /* Count agreement at each level */
+                for (int lev = 0; lev < nlevel; lev++) {
+                    if (genusmat[boot_g * nlevel + lev] == genusmat[max_g * nlevel + lev]) {
+                        result->rboot[j * nlevel + lev]++;
+                    } else {
+                        break;
+                    }
                 }
             }
         }
+
+        free(S);
     }
 
     free(unifs);

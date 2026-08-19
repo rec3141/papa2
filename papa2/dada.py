@@ -2,14 +2,25 @@
 
 import sys
 import os
-import multiprocessing
 import numpy as np
-from concurrent.futures import ProcessPoolExecutor
 
 # Worker pools must not fork a process that has already run an OpenMP
-# region (the child inherits a broken libgomp runtime and can deadlock),
-# so every pool uses the spawn context.
+# region (the child inherits a broken libgomp runtime and can deadlock).
+# loky provides spawn-safe workers without requiring callers to guard
+# their scripts with __main__; plain spawn is the fallback.
+try:
+    from loky import get_reusable_executor as _loky_executor
+except ImportError:
+    _loky_executor = None
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
 _MP_CTX = multiprocessing.get_context("spawn")
+
+
+def _make_pool(n_workers):
+    if _loky_executor is not None:
+        return _loky_executor(max_workers=n_workers)
+    return ProcessPoolExecutor(max_workers=n_workers, mp_context=_MP_CTX)
 from . import _cdada
 from .io import derep_fastq
 from .error import loess_errfun, get_initial_err
@@ -189,7 +200,7 @@ def dada(derep, err=None, error_estimation_function=None, self_consist=False,
         if use_parallel:
             work_args = [(fpath, err, o, max_clust_iter, verbose, omp_threads)
                          for fpath in file_inputs]
-            with ProcessPoolExecutor(max_workers=n_workers, mp_context=_MP_CTX) as pool:
+            with _make_pool(n_workers) as pool:
                 results = list(pool.map(_run_one_file_sample, work_args))
         else:
             results = []
@@ -227,7 +238,7 @@ def dada(derep, err=None, error_estimation_function=None, self_consist=False,
             # Parallel multi-sample execution.
             work_args = [(drp, erri, o, max_clust_iter, verbose, omp_threads)
                          for drp in derep]
-            with ProcessPoolExecutor(max_workers=n_workers, mp_context=_MP_CTX) as pool:
+            with _make_pool(n_workers) as pool:
                 results = list(pool.map(_run_one_sample, work_args))
             if verbose and self_consist:
                 sys.stdout.write("." * len(derep))
@@ -323,7 +334,7 @@ def learn_errors(fastq_files, nbases=1e8, error_estimation_function=None,
     n_workers = int(os.environ.get("DADA2_WORKERS", "0")) or (os.cpu_count() or 1)
     n_workers = min(n_workers, len(fastq_files))
     if n_workers > 1 and len(fastq_files) > 1:
-        with ProcessPoolExecutor(max_workers=n_workers, mp_context=_MP_CTX) as pool:
+        with _make_pool(n_workers) as pool:
             for drp in pool.map(derep_fastq, fastq_files):
                 if verbose:
                     print(f"Read {int(drp['abundances'].sum())} reads, "
@@ -331,7 +342,10 @@ def learn_errors(fastq_files, nbases=1e8, error_estimation_function=None,
                 dereps.append(drp)
                 total_bases += _n_bases(drp)
                 if total_bases > nbases:
-                    pool.shutdown(wait=False, cancel_futures=True)
+                    try:
+                        pool.shutdown(wait=False, cancel_futures=True)
+                    except TypeError:  # loky's shutdown has no cancel_futures
+                        pool.shutdown(wait=False, kill_workers=True)
                     break
     else:
         for fl in fastq_files:

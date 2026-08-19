@@ -77,6 +77,7 @@ def _cmd_assign_taxonomy(args):
         try_rc=args.try_rc,
         output_bootstraps=True,
         verbose=args.verbose,
+        seed=args.seed,
     )
     if args.tax_levels:
         kw["tax_levels"] = args.tax_levels
@@ -138,6 +139,9 @@ def main(argv=None):
     at.add_argument("--min-boot", type=int, default=50, help="Min bootstrap confidence [default: 50]")
     at.add_argument("--try-rc", action="store_true", help="Try reverse complement for unassigned")
     at.add_argument("--threads", type=int, default=1, help="Number of threads [default: 1]")
+    at.add_argument("--seed", type=int, default=None,
+                    help="Bootstrap RNG seed; matches R's set.seed(SEED) "
+                         "before assignTaxonomy [default: nondeterministic]")
     at.add_argument("-v", "--verbose", action="store_true")
 
     args = parser.parse_args(argv)

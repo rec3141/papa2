@@ -19,6 +19,13 @@ import zlib
 from concurrent.futures import ProcessPoolExecutor
 
 try:
+    # Spawn-safe worker pools that do not require a __main__ guard in the
+    # calling script (forking after an OpenMP region deadlocks children).
+    from loky import get_reusable_executor as _loky_executor
+except ImportError:
+    _loky_executor = None
+
+try:
     # python-isal: SIMD-accelerated gzip.  Decompressed content is
     # identical; compressed files are slightly larger than zlib level 6.
     from isal import igzip as _igzip
@@ -1044,9 +1051,13 @@ def filter_and_trim(
         tasks = [(fwd[i], filt[i], se_kw) for i in range(n_files)]
 
     if n_workers > 1 and n_files > 1:
-        # spawn: forking after an OpenMP region deadlocks the child
-        ctx = multiprocessing.get_context("spawn")
-        with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
+        if _loky_executor is not None:
+            pool_cm = _loky_executor(max_workers=n_workers)
+        else:
+            # spawn: forking after an OpenMP region deadlocks the child
+            ctx = multiprocessing.get_context("spawn")
+            pool_cm = ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx)
+        with pool_cm as pool:
             runner = _run_paired_task if paired else _run_single_task
             futures = {pool.submit(runner, t): i for i, t in enumerate(tasks)}
             for fut in futures:
