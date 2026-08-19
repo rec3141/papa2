@@ -170,6 +170,22 @@ def run_dada(seqs, abundances, err_mat, quals=None, priors=None,
 
 
 # =========================================================================
+# Reference kmer matching (filtering helpers)
+# =========================================================================
+
+_lib.dada2_match_ref_counts.restype = None
+_lib.dada2_match_ref_counts.argtypes = [
+    ct.c_char_p,               # concat
+    ct.POINTER(ct.c_int64),    # offsets (nseq+1)
+    ct.c_int,                  # nseq
+    ct.c_char_p,               # ref
+    ct.c_int,                  # word_size
+    ct.c_int,                  # non_overlapping
+    ct.POINTER(ct.c_int32),    # out counts
+]
+
+
+# =========================================================================
 # Taxonomy assignment
 # =========================================================================
 

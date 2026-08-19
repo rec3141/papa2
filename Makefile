@@ -20,7 +20,8 @@ SRCS = src/dada2_capi.cpp \
        src/kmers.cpp \
        src/misc.cpp \
        src/nwalign_endsfree.cpp \
-       src/nwalign_vectorized.cpp
+       src/nwalign_vectorized.cpp \
+       src/filter_capi.cpp
 
 OBJS = $(SRCS:.cpp=.o)
 LDFLAGS += -lm -lz

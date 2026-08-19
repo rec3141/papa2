@@ -5,7 +5,7 @@ from ._cdada import is_bimera, table_bimera
 
 
 def is_bimera_denovo(seqtab_row, seqs, allow_one_off=False,
-                     min_one_off_par_dist=4, min_fold=1.5, min_abund=2,
+                     min_one_off_par_dist=4, min_fold=2, min_abund=8,
                      match=5, mismatch=-4, gap_p=-8, max_shift=16):
     """Check whether a single sequence is a bimera of more-abundant parents.
 
@@ -52,8 +52,8 @@ def is_bimera_denovo(seqtab_row, seqs, allow_one_off=False,
     return flags
 
 
-def remove_bimera_denovo(seqtab, method="consensus", min_fold=1.5,
-                         min_abund=2, allow_one_off=False,
+def remove_bimera_denovo(seqtab, method="consensus", min_fold=None,
+                         min_abund=None, allow_one_off=False,
                          min_one_off_par_dist=4, min_sample_fraction=0.9,
                          ignore_n_negatives=1,
                          match=5, mismatch=-4, gap_p=-8, max_shift=16,
@@ -73,8 +73,12 @@ def remove_bimera_denovo(seqtab, method="consensus", min_fold=1.5,
             - "pooled": sum across samples, treat as single sample.
             - "per-sample": zero only the sample/ASV cells flagged as
               chimeric, then drop all-zero ASV columns.
-        min_fold: parent fold-abundance threshold.
-        min_abund: parent minimum absolute abundance.
+        min_fold: parent fold-abundance threshold.  Default matches R's
+            per-method defaults: 1.5 for "consensus", 2 for "pooled" and
+            "per-sample".
+        min_abund: parent minimum absolute abundance.  Default matches R's
+            per-method defaults: 2 for "consensus", 8 for "pooled" and
+            "per-sample".
         allow_one_off: allow one mismatch in chimera model.
         min_one_off_par_dist: min hamming distance for one-off parents.
         min_sample_fraction: fraction of present samples that must flag
@@ -98,6 +102,13 @@ def remove_bimera_denovo(seqtab, method="consensus", min_fold=1.5,
         seqs = list(seqtab["seqs"])
     else:
         raise TypeError("seqtab must be a dict with 'table' and 'seqs' keys")
+
+    # R's removeBimeraDenovo delegates to isBimeraDenovoTable ("consensus")
+    # or isBimeraDenovo ("pooled"/"per-sample"), whose defaults differ.
+    if min_fold is None:
+        min_fold = 1.5 if method == "consensus" else 2
+    if min_abund is None:
+        min_abund = 2 if method == "consensus" else 8
 
     mat = np.asarray(mat, dtype=np.int32)
     if mat.ndim == 1:
