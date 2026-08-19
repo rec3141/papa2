@@ -19,6 +19,8 @@ from . import __version__
 def _cmd_filter_trim(args):
     """Run paired-end quality filtering."""
     from .filter import fastq_paired_filter
+    from ._cdada import set_num_threads
+    set_num_threads(args.threads)
 
     reads_in, reads_out = fastq_paired_filter(
         args.fwd, args.filt_fwd,
@@ -127,6 +129,8 @@ def main(argv=None):
     ft.add_argument("--min-len", type=int, default=20, help="Min read length [default: 20]")
     ft.add_argument("--no-rm-phix", action="store_true", help="Skip PhiX removal")
     ft.add_argument("--no-compress", action="store_true", help="Don't gzip output")
+    ft.add_argument("--threads", type=int, default=1,
+                    help="OpenMP threads for PhiX screening [default: 1]")
     ft.add_argument("--stats", help="Write filtering stats TSV to this path")
     ft.add_argument("--sample-id", help="Sample ID for stats TSV [default: input filename]")
     ft.add_argument("-v", "--verbose", action="store_true")
