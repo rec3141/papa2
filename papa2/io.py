@@ -51,12 +51,20 @@ def _derep_fastq_c(filepath):
     return {"seqs": seqs, "abundances": abunds, "quals": quals, "map": rmap}
 
 
-def derep_fastq(filepath, verbose=False, with_map=False):
-    """Dereplicate a FASTQ file.
+def _derep_one(args):
+    filepath, verbose = args
+    return derep_fastq(filepath, verbose=verbose)
+
+
+def derep_fastq(filepath, verbose=False, with_map=False, multithread=True):
+    """Dereplicate a FASTQ file (or a list of them).
 
     Uses C implementation (zlib) when available for ~2x speedup.
     Always returns the per-read map (read_idx -> unique_idx).
     The with_map parameter is accepted for backward compatibility but ignored.
+
+    A list of paths returns a list of results; with multithread (default)
+    the files are processed in a worker pool.
 
     Returns:
         dict with keys:
@@ -65,6 +73,24 @@ def derep_fastq(filepath, verbose=False, with_map=False):
             quals: numpy float64 array (n_uniques x max_seqlen), average quality
             map: numpy int32 array, maps each read to its unique index (0-indexed)
     """
+    if isinstance(filepath, (list, tuple)):
+        files = list(filepath)
+        if multithread is True:
+            n_workers = min(len(files), os.cpu_count() or 1)
+        elif isinstance(multithread, int) and multithread > 1:
+            n_workers = min(len(files), multithread)
+        else:
+            n_workers = 1
+        tasks = [(f, verbose) for f in files]
+        if n_workers > 1:
+            try:
+                from loky import get_reusable_executor
+                with get_reusable_executor(max_workers=n_workers) as pool:
+                    return list(pool.map(_derep_one, tasks))
+            except ImportError:
+                pass
+        return [_derep_one(t) for t in tasks]
+
     # Use C implementation if available
     if _HAS_C_DEREP:
         result = _derep_fastq_c(filepath)
